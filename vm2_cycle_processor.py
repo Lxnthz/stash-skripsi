@@ -314,7 +314,7 @@ def process_one_cycle(
                 _log(f"warning: upload failed for already-processed cycle {chain_v}/{cycle_id}: {exc}")
 
         if delete_incoming_on_success and incoming_cycle.exists():
-            if _verify_cycle_ready(incoming_cycle) and outputs.permanent_dir.is_dir():
+            if _verify_cycle_ready(incoming_cycle):
                 if outputs.encrypted_b64.is_file() and outputs.encrypted_meta.is_file():
                     try:
                         _safe_delete_incoming_cycle(incoming_chain_dir, incoming_cycle)
@@ -328,19 +328,16 @@ def process_one_cycle(
 
     _log(f"processing cycle {chain_v}/{cycle_id}")
 
-    # 1) Copy raw cycle into permanent/<chain-v>/<cycle_id>/.
-    ensure_dirs(outputs.permanent_dir.parent)
-    ensure_dir_copy_atomic(incoming_cycle, outputs.permanent_dir)
-    _verify_checksums_in_dir(outputs.permanent_dir)
+    _verify_checksums_in_dir(incoming_cycle)
 
     cycle_timestamp: Optional[str] = None
     try:
-        with open(outputs.permanent_dir / "manifest.json", "r", encoding="utf-8") as f:
+        with open(incoming_cycle / "manifest.json", "r", encoding="utf-8") as f:
             cycle_timestamp = json.load(f).get("cycle_timestamp")
     except Exception:
         cycle_timestamp = None
 
-    # 2) Create tar from permanent copy.
+    # 2) Create tar from incoming copy directly.
     tar_tmp: Optional[Path] = None
     ensure_dirs(work_dir / chain_v)
     if outputs.encrypted_b64.is_file() and outputs.encrypted_meta.is_file():
@@ -352,7 +349,7 @@ def process_one_cycle(
             tar_tmp.unlink()
         # Tar top-level path is chain-v/cycle_id so extraction preserves structure.
         _create_tar_from_dir(
-            outputs.permanent_dir,
+            incoming_cycle,
             arcname=f"{chain_v}/{cycle_id}",
             tar_path=tar_tmp,
         )

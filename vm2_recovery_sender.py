@@ -176,7 +176,13 @@ def _rclone_list_meta(remote_base: str, chain_v: str) -> list[str]:
 def _rsync_send_dir(src_dir: Path, dest_root: str, chain_v: str, cycle_id: str) -> None:
     """rsync src_dir → dest_root/<chain-v>/<cycle_id>/"""
     dest = dest_root.rstrip("/") + "/" + chain_v + "/" + cycle_id + "/"
-    cmd = ["rsync", "-a", str(src_dir) + "/", dest]
+    cmd = ["rsync", "-a", str(src_dir) + "/"]
+    if ":" in dest_root:
+        remote_path = dest.split(":", 1)[1]
+        cmd.extend(["--rsync-path", f"mkdir -p {remote_path} && rsync"])
+    else:
+        Path(dest).mkdir(parents=True, exist_ok=True)
+    cmd.append(dest)
     proc = subprocess.run(cmd, cwd="/", stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     if proc.returncode != 0:
         raise RuntimeError(f"rsync failed for {chain_v}/{cycle_id}: {proc.stdout}")
@@ -316,9 +322,9 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     # ---------- resolve available cycle_ids ----------
     if source == "local":
-        all_ids = _list_permanent_cycles(permanent_root, chain_v)
+        all_ids = _list_encrypted_cycles(encrypted_root, chain_v)
         if not all_ids:
-            _log(f"no cycles found under permanent root {permanent_root / chain_v}")
+            _log(f"no cycles found under encrypted root {encrypted_root / chain_v}")
             return 4
     elif source in ("cloud", "immutable"):
         env_name = ENV_RCLONE_GENERAL_REMOTE if source == "cloud" else ENV_RCLONE_IMMUTABLE_REMOTE
@@ -358,6 +364,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         rclone_remote = args.rclone_remote or os.environ.get(
             ENV_RCLONE_GENERAL_REMOTE if source == "cloud" else ENV_RCLONE_IMMUTABLE_REMOTE
         )
+    elif source == "local":
+        try:
+            key = _decode_key_from_env()
+        except ValueError as exc:
+            _log(str(exc))
+            return 2
+        rclone_remote = None
     else:
         key = b""
         rclone_remote = None
@@ -369,10 +382,18 @@ def main(argv: Optional[list[str]] = None) -> int:
         _log(f"  restoring {chain_v}/{cid} ...")
 
         if source == "local":
-            src_cycle = permanent_root / chain_v / cid
-            _verify_cycle_ready(src_cycle)
-            dest = outgoing_root / chain_v / cid
-            ensure_dir_copy_atomic(src_cycle, dest)
+            chain_outgoing = outgoing_root / chain_v
+            chain_outgoing.mkdir(parents=True, exist_ok=True)
+            local_b64 = encrypted_root / chain_v / f"{cid}.tar.aes256gcm.b64"
+            with tempfile.TemporaryDirectory(prefix=f"vm2-local-{cid}-") as td:
+                tar_path = Path(td) / f"{cid}.tar"
+                decrypt_b64_aes256gcm_to_file(key=key, in_b64_path=local_b64, out_path=tar_path)
+                _extract_tar(tar_path, outgoing_root)
+            
+            restored = chain_outgoing / cid
+            if not restored.is_dir():
+                raise RuntimeError(f"expected restored cycle dir not found: {restored}")
+            _verify_cycle_ready(restored)
 
         elif source in ("cloud", "immutable"):
             _restore_from_cloud(

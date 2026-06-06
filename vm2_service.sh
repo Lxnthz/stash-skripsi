@@ -71,7 +71,7 @@ VM2_ENABLE_IMMUTABLE_UPLOAD="${VM2_ENABLE_IMMUTABLE_UPLOAD:-0}"
 
 VM2_RESTORE_REQUEST_DIR="${VM2_RESTORE_REQUEST_DIR:-/home/recovery/local-backup/restore-requests}"
 VM2_OUTGOING_ROOT="${VM2_OUTGOING_ROOT:-/home/recovery/local-backup/outgoing/primary}"
-VM2_VM1_DEST_ROOT_DEFAULT="${VM2_VM1_DEST_ROOT_DEFAULT:-/home/primary/data/backup-incoming}"
+VM2_VM1_DEST_ROOT_DEFAULT="${VM2_VM1_DEST_ROOT_DEFAULT:-primary@192.168.10.128:/home/primary/data/backup-incoming}"
 
 STATE_DIR="${VM2_STATE_DIR:-/home/recovery/local-backup/state}"
 LOCK_FILE="$STATE_DIR/vm2_service.lock"
@@ -202,9 +202,6 @@ run_backup_loop() {
     [[ -n "$VM2_WORK_DIR" ]] && args+=("--work-dir" "$VM2_WORK_DIR")
 
     "$BACKUP_PY" "${args[@]}" || true
-
-    # Signal the restore listener that this backup round completed.
-    echo "tick" > "$pipe" 2>/dev/null || true
 
     sleep "$VM2_POLL_SECONDS"
   done
@@ -373,9 +370,7 @@ run_restore_listener() {
 
     else
       # Fallback: poll every VM2_POLL_SECONDS.
-      # Also consume backup "tick" signals from the pipe so it doesn't fill.
-      local pipe_data=""
-      read -t "$VM2_POLL_SECONDS" -r pipe_data < "$pipe" 2>/dev/null || true
+      sleep "$VM2_POLL_SECONDS"
       process_pending_requests
     fi
   done
