@@ -304,7 +304,7 @@ def _build_merged_wal_dir(cycle_dirs: list[str], out_pg: str) -> str:
 
 def _pg_restore_container(
     *,
-    out_root: str,
+    pgdata: str,
     base_tar_gz: str,
     merged_wal_dir: str,
     container: str,
@@ -322,7 +322,6 @@ def _pg_restore_container(
     if not os.path.isdir(merged_wal_dir):
         raise FileNotFoundError(f"Missing merged WAL dir: {merged_wal_dir}")
 
-    pgdata = os.path.join(out_root, "pgdata")
     os.makedirs(pgdata, exist_ok=True)
 
     # Populate PGDATA from base.tar.gz inside a throwaway container.
@@ -380,11 +379,10 @@ def _pg_restore_container(
     )
 
 
-def _mongo_restore_container(*, out_root: str, archive_gz: str, container: str, port: int, image: str) -> None:
+def _mongo_restore_container(*, mongo_data: str, archive_gz: str, container: str, port: int, image: str) -> None:
     if not os.path.isfile(archive_gz):
         raise FileNotFoundError(f"Missing Mongo basebackup archive: {archive_gz}")
 
-    mongo_data = os.path.join(out_root, "mongo_data")
     os.makedirs(mongo_data, exist_ok=True)
 
     _docker_rm(container)
@@ -626,6 +624,7 @@ def restore_cycle(
     *,
     base_unstructured_dir: str,
     out_root: str,
+    out_unstructured: str | None = None,
     cycle_dirs: list[str],
     chunk_size: int,
     verify_latest: bool,
@@ -651,11 +650,13 @@ def restore_cycle(
         _log("[VERIFY]", "OK")
 
     out_root = os.path.abspath(out_root)
-    out_unstructured = os.path.join(out_root, "unstructured")
+    out_unstructured = os.path.abspath(out_unstructured) if out_unstructured else os.path.join(out_root, "unstructured")
     out_pg = os.path.join(out_root, "pg")
     out_mongo = os.path.join(out_root, "mongo")
 
-    _ensure_empty_dir(out_root)
+    # Safely clear only the artifact output directories. Do not wipe out_root entirely.
+    for d in [out_unstructured, out_pg, out_mongo]:
+        _ensure_empty_dir(d)
 
     # 1) Base copy for unstructured
     _log("[PFC]", f"Copying base unstructured -> {out_unstructured}")
@@ -1081,6 +1082,7 @@ def main() -> int:
         stats = restore_cycle(
             base_unstructured_dir=args.base_unstructured,
             out_root=args.out_root,
+            out_unstructured="/home/primary/data/unstructured" if args.promote else None,
             cycle_dirs=cycle_dirs,
             chunk_size=args.chunk_size,
             verify_latest=(not args.no_verify),
@@ -1099,8 +1101,12 @@ def main() -> int:
 
             # Feature 2: pass the pre-merged WAL dir so PG sees a single stream.
             merged_wal = stats.merged_wal_dir or stats.out_pg
+            pgdata_dir = "/home/primary/data/transactional/postgres/data" if args.promote else os.path.join(stats.out_root, "pgdata")
+            if args.promote:
+                _ensure_empty_dir(pgdata_dir)
+
             _pg_restore_container(
-                out_root=stats.out_root,
+                pgdata=pgdata_dir,
                 base_tar_gz=stats.pg_latest_base_tar_gz,
                 merged_wal_dir=merged_wal,
                 container=pg_container,
@@ -1118,8 +1124,12 @@ def main() -> int:
             if args.promote:
                 _log("[PROMOTE]", f"Starting as live stack: container={mongo_container} port={mongo_port}")
 
+            mongo_data_dir = "/home/primary/data/transactional/mongo/data" if args.promote else os.path.join(stats.out_root, "mongo_data")
+            if args.promote:
+                _ensure_empty_dir(mongo_data_dir)
+
             _mongo_restore_container(
-                out_root=stats.out_root,
+                mongo_data=mongo_data_dir,
                 archive_gz=stats.mongo_latest_archive_gz,
                 container=mongo_container,
                 port=mongo_port,
@@ -1138,7 +1148,8 @@ def main() -> int:
                 delta_files = []
             delta_files.sort()
             if delta_files:
-                _mongo_apply_oplog_deltas(container=args.mongo_container, delta_files=delta_files)
+                # Replay oplog into the chosen container
+                _mongo_apply_oplog_deltas(container=mongo_container, delta_files=delta_files)
 
         # Feature 4: bump chain version in state DB after a successful restore.
         # The next backup cycle will write to chain-v(N+1)/, leaving the old

@@ -451,6 +451,8 @@ def run_cycle(cfg: BackupConfig) -> str:
                         _tag_good(),
                         f"all {len(dest_dirs)} destination(s) OK elapsed={_fmt_elapsed(time.perf_counter() - transfer_started)}",
                     )
+                    _log("main", _tag_info(), f"Deleting local cycle since it was transferred: {cycle_out}")
+                    shutil.rmtree(cycle_out, ignore_errors=True)
                 except Exception as e:
                     raise RuntimeError(f"Transfer failed: {e}")
             else:
