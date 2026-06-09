@@ -24,7 +24,6 @@ from pathlib import Path
 BASE = Path("/home/recovery/local-backup")
 UTILS = Path("/home/recovery/utilities")
 
-PERMANENT = BASE / "permanent"
 ENCRYPTED = BASE / "encrypted"
 INCOMING  = BASE / "incoming"
 
@@ -76,28 +75,24 @@ def main() -> None:
         "--once",
         "--keep-incoming",
         "--incoming-dir",   str(INCOMING),
-        "--permanent-root", str(PERMANENT),
         "--encrypted-root", str(ENCRYPTED),
         "--work-dir",       str(BASE / "staging"),
     ], env=env_key)
     print(r.stdout or "(no stdout)")
 
-    # Verify permanent + encrypted dirs populated.
-    perm_cycles = sorted((PERMANENT / CHAIN_V).iterdir()) if (PERMANENT / CHAIN_V).is_dir() else []
+    # Verify encrypted dir populated.
     enc_b64s    = sorted((ENCRYPTED / CHAIN_V).glob("*.tar.aes256gcm.b64")) if (ENCRYPTED / CHAIN_V).is_dir() else []
-    assert len(perm_cycles) == len(cycle_dirs), f"Expected {len(cycle_dirs)} permanent cycles, got {len(perm_cycles)}"
     assert len(enc_b64s)    == len(cycle_dirs), f"Expected {len(cycle_dirs)} encrypted artifacts, got {len(enc_b64s)}"
 
-    for d in perm_cycles:
-        done_marker = d / ".vm2_done"
-        assert done_marker.is_file(), f"Missing .vm2_done in {d}"
+    for b in enc_b64s:
+        cycle_id = b.name.split(".")[0]
+        done_marker = b.parent / f"{cycle_id}.vm2_done"
+        assert done_marker.is_file(), f"Missing .vm2_done for {cycle_id}"
         meta = json.loads(done_marker.read_text())
         assert meta["chain_v"] == CHAIN_V
-        ok(f"permanent {CHAIN_V}/{d.name}  chain_v={meta['chain_v']}")
+        ok(f"encrypted {CHAIN_V}/{cycle_id} done marker chain_v={meta['chain_v']}")
 
     for b in enc_b64s:
-        meta_path = b.with_suffix("").with_suffix("").with_suffix(".meta.json")
-        # actual suffix is .tar.aes256gcm.meta.json
         meta_path = b.parent / b.name.replace(".tar.aes256gcm.b64", ".tar.aes256gcm.meta.json")
         assert meta_path.is_file(), f"Missing meta json for {b.name}"
         meta = json.loads(meta_path.read_text())
@@ -114,7 +109,6 @@ def main() -> None:
         "--version", CHAIN_V,
         "--chain",   "3",
         "--source",  "local",
-        "--permanent-root", str(PERMANENT),
         "--encrypted-root", str(ENCRYPTED),
         "--dry-run",
     ], env=env_key)
@@ -128,7 +122,6 @@ def main() -> None:
         "--version", CHAIN_V,
         "--chain",   "1",
         "--source",  "local",
-        "--permanent-root", str(PERMANENT),
         "--encrypted-root", str(ENCRYPTED),
         "--dry-run",
     ], env=env_key)
@@ -148,7 +141,6 @@ def main() -> None:
             "--version",       CHAIN_V,
             "--chain",         "2",
             "--source",        "local",
-            "--permanent-root", str(PERMANENT),
             "--encrypted-root", str(ENCRYPTED),
             "--outgoing-root",  str(tmp_out_path),
         ], env=env_key)

@@ -13,7 +13,6 @@ DEFAULTS = {
     "restore_request_dir": "/home/recovery/local-backup/restore-requests",
     "outgoing_root": "/home/recovery/local-backup/outgoing/primary",
     "state_dir": "/home/recovery/local-backup/state",
-    "permanent_root": "/local-backup/permanent",
     "encrypted_root": "/local-backup/encrypted",
     # work_dir default is derived from encrypted_root parent (matches vm2_cycle_processor.py behavior)
 }
@@ -77,7 +76,6 @@ def main() -> int:
     ap.add_argument("--restore-request-dir", default=DEFAULTS["restore_request_dir"])
     ap.add_argument("--outgoing-root", default=DEFAULTS["outgoing_root"])
     ap.add_argument("--state-dir", default=DEFAULTS["state_dir"])
-    ap.add_argument("--permanent-root", default=DEFAULTS["permanent_root"])
     ap.add_argument("--encrypted-root", default=DEFAULTS["encrypted_root"])
     ap.add_argument(
         "--work-dir",
@@ -106,7 +104,6 @@ def main() -> int:
     restore_request_dir = Path(args.restore_request_dir)
     outgoing_root = Path(args.outgoing_root)
     state_dir = Path(args.state_dir)
-    permanent_root = Path(args.permanent_root)
     encrypted_root = Path(args.encrypted_root)
     work_dir = Path(args.work_dir) if args.work_dir else encrypted_root.parent / "staging"
 
@@ -115,7 +112,6 @@ def main() -> int:
         restore_request_dir,
         outgoing_root,
         state_dir,
-        permanent_root,
         encrypted_root,
         work_dir,
     ]
@@ -146,8 +142,7 @@ def main() -> int:
     if not args.keep_outgoing:
         _rm_contents(outgoing_root)
 
-    # Hard wipe permanent/encrypted/work/state (contents only; keep dirs)
-    _rm_contents(permanent_root)
+    # Hard wipe encrypted/work/state (contents only; keep dirs)
     _rm_contents(encrypted_root)
     _rm_contents(work_dir)
     _rm_contents(state_dir)

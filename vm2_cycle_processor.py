@@ -13,11 +13,9 @@ A cycle is processed only when:
   - sha256sum -c checksums.sha256 succeeds inside that cycle directory
 
 For each chain-v / cycle_id pair:
-  - Raw cycle copied to:       <permanent_root>/<chain-v>/<cycle_id>/...
   - Encrypted artifact at:     <encrypted_root>/<chain-v>/<cycle_id>.tar.aes256gcm.b64
   - Metadata at:               <encrypted_root>/<chain-v>/<cycle_id>.tar.aes256gcm.meta.json
-  - Idempotency marker:        <permanent_root>/<chain-v>/<cycle_id>/.vm2_done
-
+  - Idempotency marker:        <encrypted_root>/<chain-v>/<cycle_id>.vm2_done
 After successful processing, the incoming cycle directory is deleted (default) to avoid
 disk bloat. Set VM2_DELETE_INCOMING_ON_SUCCESS=0 to disable.
 
@@ -72,14 +70,12 @@ from lib.fsutil import SingleInstanceLock, atomic_write_json, ensure_dir_copy_at
 NONCE_LEN = 12
 TAG_LEN = 16
 DEFAULT_INCOMING = "/home/recovery/local-backup/incoming"
-DEFAULT_PERMANENT_ROOT = "/home/recovery/local-backup/permanent"
 DEFAULT_ENCRYPTED_ROOT = "/home/recovery/local-backup/encrypted"
 DEFAULT_POLL_SECONDS = 15
 
 
 @dataclass(frozen=True)
 class Outputs:
-    permanent_dir: Path
     done_marker: Path
     encrypted_b64: Path
     encrypted_meta: Path
@@ -152,20 +148,17 @@ def _verify_cycle_ready(cycle_dir: Path) -> bool:
 
 
 def _compute_outputs(
-    permanent_root: Path,
     encrypted_root: Path,
     chain_v: str,
     cycle_id: str,
 ) -> Outputs:
-    permanent_dir = permanent_root / chain_v / cycle_id
     enc_chain_dir = encrypted_root / chain_v
     return Outputs(
-        permanent_dir=permanent_dir,
-        done_marker=permanent_dir / ".vm2_done",
+        done_marker=enc_chain_dir / f"{cycle_id}.vm2_done",
         encrypted_b64=enc_chain_dir / f"{cycle_id}.tar.aes256gcm.b64",
         encrypted_meta=enc_chain_dir / f"{cycle_id}.tar.aes256gcm.meta.json",
-        uploaded_general_marker=permanent_dir / ".vm2_uploaded_general",
-        uploaded_immutable_marker=permanent_dir / ".vm2_uploaded_immutable",
+        uploaded_general_marker=enc_chain_dir / f"{cycle_id}.vm2_uploaded_general",
+        uploaded_immutable_marker=enc_chain_dir / f"{cycle_id}.vm2_uploaded_immutable",
     )
 
 
@@ -277,7 +270,6 @@ def process_one_cycle(
     incoming_chain_dir: Path,
     incoming_cycle: Path,
     chain_v: str,
-    permanent_root: Path,
     encrypted_root: Path,
     work_dir: Path,
     delete_incoming_on_success: bool,
@@ -285,7 +277,7 @@ def process_one_cycle(
     upload_immutable_cmd: Optional[str],
 ) -> bool:
     cycle_id = incoming_cycle.name
-    outputs = _compute_outputs(permanent_root, encrypted_root, chain_v, cycle_id)
+    outputs = _compute_outputs(encrypted_root, chain_v, cycle_id)
 
     # Ensure encrypted chain dir exists.
     ensure_dirs(outputs.encrypted_b64.parent)
@@ -406,7 +398,6 @@ def run_once(
     *,
     key: bytes,
     incoming_root: Path,
-    permanent_root: Path,
     encrypted_root: Path,
     work_dir: Path,
     delete_incoming_on_success: bool,
@@ -428,7 +419,6 @@ def run_once(
                     incoming_chain_dir=chain_dir,
                     incoming_cycle=cycle_dir,
                     chain_v=chain_v,
-                    permanent_root=permanent_root,
                     encrypted_root=encrypted_root,
                     work_dir=work_dir,
                     delete_incoming_on_success=delete_incoming_on_success,
@@ -460,11 +450,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         type=int,
         default=int(os.environ.get("VM2_POLL_SECONDS", str(DEFAULT_POLL_SECONDS))),
         help=f"poll interval seconds (default: env VM2_POLL_SECONDS or {DEFAULT_POLL_SECONDS})",
-    )
-    parser.add_argument(
-        "--permanent-root",
-        default=os.environ.get("VM2_PERMANENT_ROOT", DEFAULT_PERMANENT_ROOT),
-        help=f"permanent output root (default: {DEFAULT_PERMANENT_ROOT})",
     )
     parser.add_argument(
         "--encrypted-root",
@@ -508,7 +493,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 2
 
     incoming_root = Path(args.incoming_dir)
-    permanent_root = Path(args.permanent_root)
     encrypted_root = Path(args.encrypted_root)
 
     delete_incoming_on_success = _env_flag("VM2_DELETE_INCOMING_ON_SUCCESS", True)
@@ -518,7 +502,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         delete_incoming_on_success = False
 
     try:
-        ensure_dirs(permanent_root, encrypted_root)
+        ensure_dirs(encrypted_root)
     except PermissionError as exc:
         _log(f"cannot create output directories (need write access): {exc}")
         return 3
@@ -547,7 +531,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         return run_once(
             key=key,
             incoming_root=incoming_root,
-            permanent_root=permanent_root,
             encrypted_root=encrypted_root,
             work_dir=work_dir,
             delete_incoming_on_success=delete_incoming_on_success,

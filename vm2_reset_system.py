@@ -12,7 +12,6 @@ DEFAULT_RESTORE_REQUEST_DIR = "/home/recovery/local-backup/restore-requests"
 DEFAULT_OUTGOING_ROOT = "/home/recovery/local-backup/outgoing/primary"
 DEFAULT_STATE_DIR = "/home/recovery/local-backup/state"
 
-DEFAULT_PERMANENT_ROOT = "/home/recovery/local-backup/permanent"
 DEFAULT_ENCRYPTED_ROOT = "/home/recovery/local-backup/encrypted"
 
 
@@ -75,7 +74,6 @@ def main() -> int:
     ap.add_argument("--outgoing-root", default=DEFAULT_OUTGOING_ROOT)
     ap.add_argument("--state-dir", default=DEFAULT_STATE_DIR)
 
-    ap.add_argument("--permanent-root", default=DEFAULT_PERMANENT_ROOT)
     ap.add_argument("--encrypted-root", default=DEFAULT_ENCRYPTED_ROOT)
     ap.add_argument(
         "--work-dir",
@@ -106,7 +104,6 @@ def main() -> int:
     outgoing_root = Path(args.outgoing_root)
     state_dir = Path(args.state_dir)
 
-    permanent_root = Path(args.permanent_root)
     encrypted_root = Path(args.encrypted_root)
     work_dir = Path(args.work_dir) if args.work_dir else encrypted_root.parent / "staging"
 
@@ -115,7 +112,6 @@ def main() -> int:
         restore_request_dir,
         outgoing_root,
         state_dir,
-        permanent_root,
         encrypted_root,
         work_dir,
     ]
@@ -146,7 +142,6 @@ def main() -> int:
         _rm_contents(outgoing_root)
 
     _rm_contents(state_dir)
-    _rm_contents(permanent_root)
     _rm_contents(encrypted_root)
     _rm_contents(work_dir)
 
@@ -156,7 +151,6 @@ def main() -> int:
         restore_request_dir,
         outgoing_root,
         state_dir,
-        permanent_root,
         encrypted_root,
         work_dir,
     ]:
@@ -166,7 +160,6 @@ def main() -> int:
     print("- incoming cleared" if not args.keep_incoming else "- incoming kept")
     print("- restore-requests cleared" if not args.keep_requests else "- restore-requests kept")
     print("- outgoing cleared" if not args.keep_outgoing else "- outgoing kept")
-    print(f"- permanent cleared: {permanent_root}")
     print(f"- encrypted cleared: {encrypted_root}")
     print(f"- work/staging cleared: {work_dir}")
     print(f"- state cleared: {state_dir}")

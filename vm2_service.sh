@@ -60,7 +60,6 @@ require_env() {
 VM2_POLL_SECONDS="${VM2_POLL_SECONDS:-15}"
 
 VM2_INCOMING_DIR="${VM2_INCOMING_DIR:-/home/recovery/local-backup/incoming}"
-VM2_PERMANENT_ROOT="${VM2_PERMANENT_ROOT:-/home/recovery/local-backup/permanent}"
 VM2_ENCRYPTED_ROOT="${VM2_ENCRYPTED_ROOT:-/home/recovery/local-backup/encrypted}"
 VM2_WORK_DIR="${VM2_WORK_DIR:-}"
 
@@ -120,7 +119,6 @@ trap cleanup EXIT INT TERM
 ensure_dirs() {
   mkdir -p \
     "$VM2_INCOMING_DIR" \
-    "$VM2_PERMANENT_ROOT" \
     "$VM2_ENCRYPTED_ROOT" \
     "$VM2_RESTORE_REQUEST_DIR" \
     "$VM2_OUTGOING_ROOT" \
@@ -196,7 +194,6 @@ run_backup_loop() {
     args=(
       "--once"
       "--incoming-dir"   "$VM2_INCOMING_DIR"
-      "--permanent-root" "$VM2_PERMANENT_ROOT"
       "--encrypted-root" "$VM2_ENCRYPTED_ROOT"
     )
     [[ -n "$VM2_WORK_DIR" ]] && args+=("--work-dir" "$VM2_WORK_DIR")
@@ -266,7 +263,6 @@ execute_restore_request() {
     "--version"        "$version"
     "--chain"          "$chain"
     "--source"         "$source"
-    "--permanent-root" "$VM2_PERMANENT_ROOT"
     "--encrypted-root" "$VM2_ENCRYPTED_ROOT"
     "--outgoing-root"  "$VM2_OUTGOING_ROOT"
   )
@@ -403,7 +399,6 @@ main() {
   log "║           vm2_service  starting up               ║"
   log "╚══════════════════════════════════════════════════╝"
   log "  incoming     : $VM2_INCOMING_DIR"
-  log "  permanent    : $VM2_PERMANENT_ROOT"
   log "  encrypted    : $VM2_ENCRYPTED_ROOT"
   log "  restore-reqs : $VM2_RESTORE_REQUEST_DIR"
   log "  outgoing     : $VM2_OUTGOING_ROOT"

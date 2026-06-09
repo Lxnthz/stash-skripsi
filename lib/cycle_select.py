@@ -46,23 +46,6 @@ def read_cycle_timestamp_from_manifest(cycle_dir: Path) -> _dt.datetime:
     return parse_timestamp(ts)
 
 
-def list_cycles_from_permanent(permanent_root: Path) -> list[CycleInfo]:
-    cycles: list[CycleInfo] = []
-    if not permanent_root.exists():
-        return cycles
-    for child in sorted(permanent_root.iterdir()):
-        if not child.is_dir():
-            continue
-        cycle_id = child.name
-        try:
-            ts = read_cycle_timestamp_from_manifest(child)
-        except Exception:
-            # Skip directories that aren't valid cycles.
-            continue
-        cycles.append(CycleInfo(cycle_id=cycle_id, path=child, cycle_timestamp=ts))
-    return cycles
-
-
 def list_cycles_from_encrypted_meta(encrypted_root: Path) -> list[CycleInfo]:
     """List cycles based on <cycle_id>.tar.aes256gcm.meta.json.
 

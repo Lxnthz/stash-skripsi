@@ -4,7 +4,7 @@ decrypt_and_compare.py
 ======================
 Full pipeline test:
 
-  1. Reset encrypted/ and permanent/ (keeps incoming/ as the reference)
+  1. Reset encrypted/ (keeps incoming/ as the reference)
   2. Re-encrypt all cycles with a freshly-generated key
      (incoming is DELETED after each cycle — the production default)
   3. Decrypt every encrypted artifact back to a temp directory
@@ -35,7 +35,6 @@ UTILS     = Path("/home/recovery/utilities")
 CHAIN_V   = "chain-v1"
 
 INCOMING  = BASE / "incoming"
-PERMANENT = BASE / "permanent"
 ENCRYPTED = BASE / "encrypted"
 STAGING   = BASE / "staging"
 
@@ -100,19 +99,18 @@ for cd in cycle_dirs:
     n = len(incoming_snapshots[cd.name])
     ok(f"  {cd.name}  ({n} checksummed files)")
 
-# ── step 1: reset encrypted/ and permanent/ ────────────────────────────────
+# ── step 1: reset encrypted/ ───────────────────────────────────────────────
 
-banner("1. Reset encrypted/ and permanent/ (keeping incoming/ as reference)")
+banner("1. Reset encrypted/ (keeping incoming/ as reference)")
 
 def wipe_and_recreate(d: Path) -> None:
     if d.exists():
         shutil.rmtree(d)
     d.mkdir(parents=True, exist_ok=True)
 
-wipe_and_recreate(PERMANENT)
 wipe_and_recreate(ENCRYPTED)
 wipe_and_recreate(STAGING)
-ok("Cleared permanent/, encrypted/, staging/")
+ok("Cleared encrypted/, staging/")
 
 # ── step 2: generate key and encrypt ──────────────────────────────────────
 
@@ -128,7 +126,6 @@ r = run([
     sys.executable, str(UTILS / "vm2_cycle_processor.py"),
     "--once",
     "--incoming-dir",   str(INCOMING),
-    "--permanent-root", str(PERMANENT),
     "--encrypted-root", str(ENCRYPTED),
     "--work-dir",       str(STAGING),
     # NO --keep-incoming → incoming dirs will be deleted after success
@@ -151,13 +148,12 @@ if len(enc_b64s) != len(cycle_dirs):
     err(f"Expected {len(cycle_dirs)} encrypted artifacts, found {len(enc_b64s)}")
 ok(f"Encrypted artifacts: {len(enc_b64s)} .b64 + {len(enc_metas)} .meta.json")
 
-# Confirm permanent markers.
-perm_chain = PERMANENT / CHAIN_V
+# Confirm encrypted markers.
 for cd in cycle_dirs:
-    marker = perm_chain / cd.name / ".vm2_done"
+    marker = enc_chain / f"{cd.name}.vm2_done"
     if not marker.is_file():
-        err(f"Missing .vm2_done in permanent/{CHAIN_V}/{cd.name}")
-ok(f"All .vm2_done markers present in permanent/{CHAIN_V}/")
+        err(f"Missing .vm2_done in encrypted/{CHAIN_V}/{cd.name}.vm2_done")
+ok(f"All .vm2_done markers present in encrypted/{CHAIN_V}/")
 
 # ── step 3: decrypt each artifact and compare ─────────────────────────────
 

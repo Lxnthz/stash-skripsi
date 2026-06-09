@@ -54,10 +54,10 @@ chain_outgoing = outgoing / CHAIN_V
 if chain_outgoing.exists():
     shutil.rmtree(chain_outgoing)
 
-permanent_chain = BASE / "permanent" / CHAIN_V
-cycles = sorted(d for d in permanent_chain.iterdir() if d.is_dir()) if permanent_chain.is_dir() else []
-assert cycles, f"No cycles in {permanent_chain} — run decrypt_and_compare.py first"
-ok(f"permanent/{CHAIN_V} has {len(cycles)} cycle(s): {[c.name for c in cycles]}")
+encrypted_chain = BASE / "encrypted" / CHAIN_V
+cycles = sorted(f for f in encrypted_chain.glob("*.tar.aes256gcm.b64")) if encrypted_chain.is_dir() else []
+assert cycles, f"No cycles in {encrypted_chain} — run decrypt_and_compare.py first"
+ok(f"encrypted/{CHAIN_V} has {len(cycles)} cycle(s): {[c.name for c in cycles]}")
 
 # ── 1. generate AES key ───────────────────────────────────────────────────────
 banner("1. Generate AES-256 key")
@@ -69,7 +69,6 @@ env = {
     "VM2_AES_KEY_B64": key_b64,
     "VM2_POLL_SECONDS": "5",                    # fast polling for test
     "VM2_INCOMING_DIR":   str(BASE / "incoming"),
-    "VM2_PERMANENT_ROOT": str(BASE / "permanent"),
     "VM2_ENCRYPTED_ROOT": str(BASE / "encrypted"),
     "VM2_RESTORE_REQUEST_DIR": str(req_dir),
     "VM2_OUTGOING_ROOT":  str(outgoing),

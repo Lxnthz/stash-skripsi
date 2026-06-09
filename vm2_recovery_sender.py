@@ -15,7 +15,7 @@ correct incremental replay order.
 
 Restore sources
 ---------------
-  local      – read raw cycles from permanent/<chain-v>/<cycle_id>/ (no decryption needed)
+  local      – read encrypted cycles from local encrypted store
   cloud      – download encrypted artifacts from the general GCS bucket via rclone
   immutable  – download encrypted artifacts from the immutable GCS bucket via rclone
 
@@ -49,7 +49,6 @@ from lib.decrypt_aesgcm_b64 import decrypt_b64_aes256gcm_to_file  # noqa: E402
 from lib.fsutil import ensure_dir_copy_atomic, ensure_dirs  # noqa: E402
 
 
-DEFAULT_PERMANENT_ROOT = "/home/recovery/local-backup/permanent"
 DEFAULT_ENCRYPTED_ROOT = "/home/recovery/local-backup/encrypted"
 DEFAULT_OUTGOING_ROOT = "/home/recovery/local-backup/outgoing/primary"
 DEFAULT_VM1_DEST_ROOT = "/home/primary/data/backup-incoming"
@@ -91,18 +90,6 @@ def _verify_cycle_ready(cycle_dir: Path) -> None:
     )
     if proc.returncode != 0:
         raise RuntimeError(f"checksums failed for {cycle_dir.name}: {proc.stdout}")
-
-
-def _list_permanent_cycles(permanent_root: Path, chain_v: str) -> list[str]:
-    """Return sorted cycle_ids available in permanent/<chain-v>/."""
-    chain_dir = permanent_root / chain_v
-    if not chain_dir.is_dir():
-        return []
-    return sorted(
-        p.name
-        for p in chain_dir.iterdir()
-        if p.is_dir() and not p.name.startswith(".")
-    )
 
 
 def _list_encrypted_cycles(encrypted_root: Path, chain_v: str) -> list[str]:
@@ -283,9 +270,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         "--source",
         choices=["local", "cloud", "immutable"],
         default="local",
-        help="where to read cycles from: local (permanent store), cloud (general bucket), immutable (immutable bucket). Default: local",
+        help="where to read cycles from: local (encrypted store), cloud (general bucket), immutable (immutable bucket). Default: local",
     )
-    p.add_argument("--permanent-root", default=os.environ.get("VM2_PERMANENT_ROOT", DEFAULT_PERMANENT_ROOT))
     p.add_argument("--encrypted-root", default=os.environ.get("VM2_ENCRYPTED_ROOT", DEFAULT_ENCRYPTED_ROOT))
     p.add_argument("--outgoing-root", default=os.environ.get("VM2_OUTGOING_ROOT", DEFAULT_OUTGOING_ROOT))
     p.add_argument(
@@ -315,7 +301,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         _log("--chain must be >= 1")
         return 2
 
-    permanent_root = Path(args.permanent_root)
     encrypted_root = Path(args.encrypted_root)
     outgoing_root = Path(args.outgoing_root)
     ensure_dirs(outgoing_root / chain_v)
@@ -326,8 +311,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not all_ids:
             _log(f"no cycles found under encrypted root {encrypted_root / chain_v}")
             return 4
-    elif source in ("cloud", "immutable"):
-        env_name = ENV_RCLONE_GENERAL_REMOTE if source == "cloud" else ENV_RCLONE_IMMUTABLE_REMOTE
+    elif source in ("general", "immutable"):
+        env_name = ENV_RCLONE_GENERAL_REMOTE if source == "general" else ENV_RCLONE_IMMUTABLE_REMOTE
         remote = args.rclone_remote or os.environ.get(env_name)
         if not remote:
             _log(f"missing required env var {env_name} (rclone remote:path)")
@@ -355,14 +340,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
 
     # ---------- resolve decryption key if needed ----------
-    if source in ("cloud", "immutable"):
+    if source in ("general", "immutable"):
         try:
             key = _decode_key_from_env()
         except ValueError as exc:
             _log(str(exc))
             return 2
         rclone_remote = args.rclone_remote or os.environ.get(
-            ENV_RCLONE_GENERAL_REMOTE if source == "cloud" else ENV_RCLONE_IMMUTABLE_REMOTE
+            ENV_RCLONE_GENERAL_REMOTE if source == "general" else ENV_RCLONE_IMMUTABLE_REMOTE
         )
     elif source == "local":
         try:
@@ -395,7 +380,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 raise RuntimeError(f"expected restored cycle dir not found: {restored}")
             _verify_cycle_ready(restored)
 
-        elif source in ("cloud", "immutable"):
+        elif source in ("general", "immutable"):
             _restore_from_cloud(
                 key=key,
                 rclone_remote=rclone_remote,
