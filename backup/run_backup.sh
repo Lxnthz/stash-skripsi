@@ -60,11 +60,63 @@ fi
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-_ts()   { date '+%Y-%m-%dT%H:%M:%S%z'; }
-_log()  { echo "[$(_ts)] [backup-loop] $*"; }
-_good() { echo "[$(_ts)] <good> $*"; }
-_bad()  { echo "[$(_ts)] <bad>  $*"; }
-_info() { echo "[$(_ts)] <info> $*"; }
+LOG_FILE="/home/primary/utilities/backup/backup.log"
+
+_ts() { date '+%Y-%m-%dT%H:%M:%S%z'; }
+
+_log_file() {
+    echo "[$(_ts)] $*" >> "$LOG_FILE"
+}
+
+_c() {
+    local text="$1"
+    local color="$2"
+    if [[ -t 1 && "${LOG_COLOR:-1}" != "0" && -z "${NO_COLOR:-}" ]]; then
+        echo -e "\e[${color}m${text}\e[0m"
+    else
+        echo "$text"
+    fi
+}
+
+_good() {
+    local scope="${LOG_SCOPE:-main}"
+    local term_msg="$(printf "%-10s %-8s %s" "$scope" "$(_c "<good>" "32")" "$*")"
+    local file_msg="$(printf "%-10s %-8s %s" "$scope" "<good>" "$*")"
+    echo "$term_msg"
+    _log_file "$file_msg"
+}
+
+_info() {
+    local scope="${LOG_SCOPE:-main}"
+    local term_msg="$(printf "%-10s %-8s %s" "$scope" "$(_c "<info>" "36")" "$*")"
+    local file_msg="$(printf "%-10s %-8s %s" "$scope" "<info>" "$*")"
+    echo "$term_msg"
+    _log_file "$file_msg"
+}
+
+_warn() {
+    local scope="${LOG_SCOPE:-main}"
+    local term_msg="$(printf "%-10s %-8s %s" "$scope" "$(_c "<warn>" "33")" "$*")"
+    local file_msg="$(printf "%-10s %-8s %s" "$scope" "<warn>" "$*")"
+    echo "$term_msg"
+    _log_file "$file_msg"
+}
+
+_bad() {
+    local scope="${LOG_SCOPE:-main}"
+    local term_msg="$(printf "%-10s %-8s %s" "$scope" "$(_c "<error>" "31")" "$*")"
+    local file_msg="$(printf "%-10s %-8s %s" "$scope" "<error>" "$*")"
+    echo "$term_msg"
+    _log_file "$file_msg"
+}
+
+_log() {
+    local scope="${LOG_SCOPE:-main}"
+    local term_msg="$(printf "%-10s %-8s %s" "$scope" "<log>" "$*")"
+    local file_msg="$(printf "%-10s %-8s %s" "$scope" "<log>" "$*")"
+    echo "$term_msg"
+    _log_file "$file_msg"
+}
 
 _info "RPO=${RPO_MINUTES}min  transfer=${TRANSFER_ENABLE:-0}  target=${RECOVERY_RSYNC_TARGETS:-<none>}"
 _info "Orchestrator: ${ORCHESTRATOR}"

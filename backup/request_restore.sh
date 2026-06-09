@@ -17,7 +17,7 @@
 # Options:
 #   --version  CHAIN    Which chain to restore (default: chain-v1)
 #   --chain    N        How many cycles to restore oldest-first (default: all)
-#   --source   SRC      Where VM2 reads from: local|cloud|immutable (default: local)
+#   --source   SRC      Where VM2 reads from: local|general|immutable (default: local)
 #   --no-send           Do NOT have VM2 push back to VM1 (inspect mode)
 #   --no-bump           Skip chain version bump after restore
 #   --dry-run           Print the request JSON but do not send it
@@ -32,6 +32,10 @@ VM2_USER="recovery"
 VM2_HOST="192.168.10.129"
 VM2_SSH_KEY="/home/primary/.ssh/recovery_rsync_ed25519"
 VM2_REQUEST_DIR="/home/recovery/local-backup/restore-requests"
+
+CLOUD_GENERAL_BUCKET_URL=""
+CLOUD_IMMUTABLE_BUCKET_URL=""
+
 
 VM1_BACKUP_INCOMING="/home/primary/data/backup-incoming"
 VM1_IP="192.168.10.128"
@@ -77,11 +81,63 @@ done
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-_ts()   { date '+%Y-%m-%dT%H:%M:%S%z'; }
-_log()  { echo "[$(_ts)] [restore-req] $*"; }
-_good() { echo "[$(_ts)] <good> $*"; }
-_bad()  { echo "[$(_ts)] <bad>  $*"; }
-_info() { echo "[$(_ts)] <info> $*"; }
+LOG_FILE="/home/primary/utilities/backup/backup.log"
+
+_ts() { date '+%Y-%m-%dT%H:%M:%S%z'; }
+
+_log_file() {
+    echo "[$(_ts)] $*" >> "$LOG_FILE"
+}
+
+_c() {
+    local text="$1"
+    local color="$2"
+    if [[ -t 1 && "${LOG_COLOR:-1}" != "0" && -z "${NO_COLOR:-}" ]]; then
+        echo -e "\e[${color}m${text}\e[0m"
+    else
+        echo "$text"
+    fi
+}
+
+_good() {
+    local scope="${LOG_SCOPE:-main}"
+    local term_msg="$(printf "%-10s %-8s %s" "$scope" "$(_c "<good>" "32")" "$*")"
+    local file_msg="$(printf "%-10s %-8s %s" "$scope" "<good>" "$*")"
+    echo "$term_msg"
+    _log_file "$file_msg"
+}
+
+_info() {
+    local scope="${LOG_SCOPE:-main}"
+    local term_msg="$(printf "%-10s %-8s %s" "$scope" "$(_c "<info>" "36")" "$*")"
+    local file_msg="$(printf "%-10s %-8s %s" "$scope" "<info>" "$*")"
+    echo "$term_msg"
+    _log_file "$file_msg"
+}
+
+_warn() {
+    local scope="${LOG_SCOPE:-main}"
+    local term_msg="$(printf "%-10s %-8s %s" "$scope" "$(_c "<warn>" "33")" "$*")"
+    local file_msg="$(printf "%-10s %-8s %s" "$scope" "<warn>" "$*")"
+    echo "$term_msg"
+    _log_file "$file_msg"
+}
+
+_bad() {
+    local scope="${LOG_SCOPE:-main}"
+    local term_msg="$(printf "%-10s %-8s %s" "$scope" "$(_c "<error>" "31")" "$*")"
+    local file_msg="$(printf "%-10s %-8s %s" "$scope" "<error>" "$*")"
+    echo "$term_msg"
+    _log_file "$file_msg"
+}
+
+_log() {
+    local scope="${LOG_SCOPE:-main}"
+    local term_msg="$(printf "%-10s %-8s %s" "$scope" "<log>" "$*")"
+    local file_msg="$(printf "%-10s %-8s %s" "$scope" "<log>" "$*")"
+    echo "$term_msg"
+    _log_file "$file_msg"
+}
 
 _ssh() {
     ssh -i "${VM2_SSH_KEY}" \
@@ -114,11 +170,20 @@ _good "SSH OK"
 
 # Step 1 – Build request JSON
 REQUEST_ID="restore-$(date +%s)"
+
+BUCKET_URL=""
+if [[ "${OPT_SOURCE}" == "general" ]]; then
+    BUCKET_URL="${CLOUD_GENERAL_BUCKET_URL}"
+elif [[ "${OPT_SOURCE}" == "immutable" ]]; then
+    BUCKET_URL="${CLOUD_IMMUTABLE_BUCKET_URL}"
+fi
+
 REQUEST_JSON=$(cat <<EOF
 {
   "version":       "${OPT_VERSION}",
   "chain":         ${OPT_CHAIN},
   "source":        "${OPT_SOURCE}",
+  "bucket_url":    "${BUCKET_URL}",
   "send_to_vm1":   ${OPT_SEND_TO_VM1},
   "vm1_dest_root": "${VM1_REMOTE_DEST}",
   "restore-date-time": "$(date '+%Y-%m-%dT%H:%M:%S%z')"

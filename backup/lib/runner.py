@@ -89,7 +89,26 @@ def _tag_info() -> str:
 
 
 def _log(scope: str, tag: str, msg: str) -> None:
-    print(f"{scope:<10} {tag:<8} {msg}")
+    # Strip ANSI color codes for file logging
+    import re
+    ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+    clean_tag = ansi_escape.sub('', tag)
+    
+    # ensure tidy formatting
+    term_line = f"{scope:<10} {tag:<8} {msg}"
+    print(term_line)
+    
+    try:
+        # Jakarta tz
+        import datetime
+        tz = datetime.timezone(datetime.timedelta(hours=7))
+        ts = datetime.datetime.now(tz).replace(microsecond=0).isoformat()
+        file_line = f"[{ts}] {scope:<10} {clean_tag:<8} {msg}\n"
+        LOG_FILE = "/home/primary/utilities/backup/backup.log"
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(file_line)
+    except Exception:
+        pass
 
 
 def _clean_dir(path: str) -> None:
