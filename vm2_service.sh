@@ -42,21 +42,35 @@ set -euo pipefail
 cd /   # never run with a CWD that might be deleted
 
 # ── logging ──────────────────────────────────────────────────────────────────
-log() {
-  local ts
-  ts="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-  echo "[$ts] $*"
+LOG_FILE="${VM2_LOG_FILE:-/home/recovery/local-backup/state/vm2_service.log}"
+
+log_info() {
+  local ts="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  echo "[$ts] <INFO> $*" | tee -a "$LOG_FILE"
+}
+log_good() {
+  local ts="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  echo "[$ts] <GOOD> $*" | tee -a "$LOG_FILE"
+}
+log_warn() {
+  local ts="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  echo "[$ts] <WARN> $*" | tee -a "$LOG_FILE" >&2
+}
+log_error() {
+  local ts="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  echo "[$ts] <ERROR> $*" | tee -a "$LOG_FILE" >&2
 }
 
 require_env() {
   local name="$1"
   if [[ -z "${!name:-}" ]]; then
-    log "ERROR: required env var $name is not set"
+    log_error "required env var $name is not set"
     exit 2
   fi
 }
 
 # ── configuration (all overridable via environment) ───────────────────────────
+export GOOGLE_APPLICATION_CREDENTIALS="/home/recovery/utilities/serviceaccount.json"
 VM2_POLL_SECONDS="${VM2_POLL_SECONDS:-15}"
 
 VM2_INCOMING_DIR="${VM2_INCOMING_DIR:-/home/recovery/local-backup/incoming}"
@@ -78,17 +92,23 @@ LOCK_FILE="$STATE_DIR/vm2_service.lock"
 # ── cloud placeholders ────────────────────────────────────────────────────────
 # General bucket upload (set once bucket is ready):
 #   VM2_UPLOAD_GENERAL_CMD="gsutil cp {src} gs://YOUR-BUCKET/{chain_v}/{cycle_id}/"
-VM2_UPLOAD_GENERAL_CMD="${VM2_UPLOAD_GENERAL_CMD:-}"
+VM2_ENABLE_GENERAL_UPLOAD="${VM2_ENABLE_GENERAL_UPLOAD:-1}"
+if [[ -z "${VM2_UPLOAD_GENERAL_CMD:-}" ]]; then
+  VM2_UPLOAD_GENERAL_CMD="rclone copy {src} mygcs:general_bucket_byan/{chain_v}/"
+fi
 
 # Immutable bucket upload (also set VM2_ENABLE_IMMUTABLE_UPLOAD=1):
 #   VM2_UPLOAD_IMMUTABLE_CMD="gsutil cp {src} gs://YOUR-IMMUTABLE-BUCKET/{chain_v}/{cycle_id}/"
-VM2_UPLOAD_IMMUTABLE_CMD="${VM2_UPLOAD_IMMUTABLE_CMD:-}"
+VM2_ENABLE_IMMUTABLE_UPLOAD="${VM2_ENABLE_IMMUTABLE_UPLOAD:-0}"
+if [[ -z "${VM2_UPLOAD_IMMUTABLE_CMD:-}" ]]; then
+  VM2_UPLOAD_IMMUTABLE_CMD="rclone copy {src} mygcs:immutable_bucket_byan/{chain_v}/"
+fi
 
 # rclone remotes for cloud restore (set once rclone is configured):
 #   VM2_RCLONE_GENERAL_REMOTE="mygcs:general-bucket"
 #   VM2_RCLONE_IMMUTABLE_REMOTE="mygcs:immutable-bucket"
-VM2_RCLONE_GENERAL_REMOTE="${VM2_RCLONE_GENERAL_REMOTE:-}"
-VM2_RCLONE_IMMUTABLE_REMOTE="${VM2_RCLONE_IMMUTABLE_REMOTE:-}"
+VM2_RCLONE_GENERAL_REMOTE="${VM2_RCLONE_GENERAL_REMOTE:-mygcs:general_bucket_byan}"
+VM2_RCLONE_IMMUTABLE_REMOTE="${VM2_RCLONE_IMMUTABLE_REMOTE:-mygcs:immutable_bucket_byan}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKUP_PY="$SCRIPT_DIR/vm2_cycle_processor.py"
@@ -103,7 +123,7 @@ SIGNAL_PIPE=""
 
 # ── cleanup ───────────────────────────────────────────────────────────────────
 cleanup() {
-  log "vm2_service shutting down …"
+  log_info "vm2_service shutting down …"
   if [[ -n "$BACKUP_PID" ]] && kill -0 "$BACKUP_PID" 2>/dev/null; then
     kill "$BACKUP_PID" 2>/dev/null || true
     wait "$BACKUP_PID" 2>/dev/null || true
@@ -111,7 +131,7 @@ cleanup() {
   if [[ -n "$SIGNAL_PIPE" && -p "$SIGNAL_PIPE" ]]; then
     rm -f "$SIGNAL_PIPE" 2>/dev/null || true
   fi
-  log "vm2_service stopped."
+  log_info "vm2_service stopped."
 }
 trap cleanup EXIT INT TERM
 
@@ -185,6 +205,7 @@ run_backup_loop() {
   local pipe="$1"
 
   export VM2_DELETE_INCOMING_ON_SUCCESS
+  export VM2_ENABLE_GENERAL_UPLOAD
   export VM2_UPLOAD_GENERAL_CMD
   export VM2_UPLOAD_IMMUTABLE_CMD
   export VM2_ENABLE_IMMUTABLE_UPLOAD
@@ -216,11 +237,11 @@ execute_restore_request() {
 
   # Atomically claim the request.
   if ! mv "$req" "$inprog" 2>/dev/null; then
-    log "restore: could not claim $(basename "$req") (already taken?)"
+    log_info "restore: could not claim $(basename "$req") (already taken?)"
     return 0
   fi
 
-  log "━━ restore request received: $(basename "$inprog") ━━"
+  log_info "━━ restore request received: $(basename "$inprog") ━━"
 
   # Parse.
   local version chain source send_to_vm1 vm1_dest_root
@@ -229,7 +250,7 @@ execute_restore_request() {
 
   local kv_lines
   if ! mapfile -t kv_lines < <(parse_request_json "$inprog" 2>&1); then
-    log "ERROR: failed to parse restore request — $(cat "$inprog" 2>/dev/null | head -3)"
+    log_error "failed to parse restore request — $(cat "$inprog" 2>/dev/null | head -3)"
     echo "parse_error" > "$err_file"
     mv "$inprog" "$base.json" 2>/dev/null || true
     return 0
@@ -246,16 +267,16 @@ execute_restore_request() {
   done
 
   if [[ -z "$version" || -z "$chain" ]]; then
-    log "ERROR: restore request missing version or chain field"
+    log_error "restore request missing version or chain field"
     echo "missing_fields" > "$err_file"
     return 0
   fi
 
-  log "  version  : $version"
-  log "  chain    : $chain  (oldest $chain cycle(s))"
-  log "  source   : $source"
-  log "  send_vm1 : $send_to_vm1"
-  [[ "$send_to_vm1" == "1" ]] && log "  vm1_dest : $vm1_dest_root"
+  log_info "  version  : $version"
+  log_info "  chain    : $chain  (oldest $chain cycle(s))"
+  log_info "  source   : $source"
+  log_info "  send_vm1 : $send_to_vm1"
+  [[ "$send_to_vm1" == "1" ]] && log_info "  vm1_dest : $vm1_dest_root"
 
   # Build recovery args.
   local args
@@ -275,20 +296,20 @@ execute_restore_request() {
   # Cloud source validation.
   if [[ "$source" == "cloud" || "$source" == "immutable" ]]; then
     if ! command -v rclone >/dev/null 2>&1; then
-      log "ERROR: rclone not found; required for source=$source"
+      log_error "rclone not found; required for source=$source"
       echo "rclone_not_found" > "$err_file"
       return 0
     fi
     if [[ "$source" == "cloud" ]]; then
       if [[ -z "${VM2_RCLONE_GENERAL_REMOTE:-}" ]]; then
-        log "ERROR: VM2_RCLONE_GENERAL_REMOTE not set (required for source=cloud)"
+        log_error "VM2_RCLONE_GENERAL_REMOTE not set (required for source=cloud)"
         echo "missing_rclone_general" > "$err_file"
         return 0
       fi
       export VM2_RCLONE_GENERAL_REMOTE
     else
       if [[ -z "${VM2_RCLONE_IMMUTABLE_REMOTE:-}" ]]; then
-        log "ERROR: VM2_RCLONE_IMMUTABLE_REMOTE not set (required for source=immutable)"
+        log_error "VM2_RCLONE_IMMUTABLE_REMOTE not set (required for source=immutable)"
         echo "missing_rclone_immutable" > "$err_file"
         return 0
       fi
@@ -298,13 +319,13 @@ execute_restore_request() {
 
   # Execute.
   if "$RECOVERY_PY" "${args[@]}"; then
-    log "━━ restore SUCCEEDED: $version / $chain cycle(s) ━━"
+    log_good "━━ restore SUCCEEDED: $version / $chain cycle(s) ━━"
     echo "ok" > "$done_file"
     rm -f "$err_file" "$inprog" 2>/dev/null || true
   else
-    log "━━ restore FAILED: $version / $chain cycle(s) ━━"
+    log_error "━━ restore FAILED: $version / $chain cycle(s) ━━"
     echo "failed" > "$err_file"
-    log "  → inspect $inprog, then rename to .json to retry"
+    log_info "  → inspect $inprog, then rename to .json to retry"
   fi
 }
 
@@ -331,10 +352,10 @@ run_restore_listener() {
 
   if command -v inotifywait >/dev/null 2>&1; then
     use_inotify=1
-    log "restore listener: using inotifywait (instant wakeup on request arrival)"
+    log_info "restore listener: using inotifywait (instant wakeup on request arrival)"
   else
-    log "restore listener: inotifywait not found — using poll fallback (${VM2_POLL_SECONDS}s)"
-    log "  → install inotify-tools for instant restore request detection"
+    log_info "restore listener: inotifywait not found — using poll fallback (${VM2_POLL_SECONDS}s)"
+    log_info "  → install inotify-tools for instant restore request detection"
   fi
 
   # Drain anything already sitting in the request dir at startup.
@@ -354,11 +375,11 @@ run_restore_listener() {
       ) || true   # timeout exits 1, that's fine
 
       if [[ -n "$event_file" && "$event_file" == *.json ]]; then
-        log "┌─ restore request detected: $event_file"
+        log_info "┌─ restore request detected: $event_file"
         # Give writer a moment to fully flush if using close_write.
         sleep 0.2
         process_pending_requests
-        log "└─ restore listener: back to watching restore-requests/"
+        log_info "└─ restore listener: back to watching restore-requests/"
       else
         # Timeout or non-JSON event: just drain in case anything arrived.
         process_pending_requests
@@ -379,7 +400,7 @@ main() {
   # Dependency checks.
   for dep in python3 sha256sum rsync flock; do
     if ! command -v "$dep" >/dev/null 2>&1; then
-      log "ERROR: $dep not found (required)"
+      log_error "$dep not found (required)"
       exit 2
     fi
   done
@@ -390,29 +411,29 @@ main() {
   # Single-instance lock (prevents two service instances running in parallel).
   exec 9>"$LOCK_FILE"
   if ! flock -n 9; then
-    log "ERROR: another vm2_service.sh is already running (lock: $LOCK_FILE)"
+    log_error "another vm2_service.sh is already running (lock: $LOCK_FILE)"
     exit 1
   fi
 
   # ── startup banner ──────────────────────────────────────────────────────────
-  log "╔══════════════════════════════════════════════════╗"
-  log "║           vm2_service  starting up               ║"
-  log "╚══════════════════════════════════════════════════╝"
-  log "  incoming     : $VM2_INCOMING_DIR"
-  log "  encrypted    : $VM2_ENCRYPTED_ROOT"
-  log "  restore-reqs : $VM2_RESTORE_REQUEST_DIR"
-  log "  outgoing     : $VM2_OUTGOING_ROOT"
-  log "  poll_seconds : $VM2_POLL_SECONDS"
+  log_info "╔══════════════════════════════════════════════════╗"
+  log_info "║           vm2_service  starting up               ║"
+  log_info "╚══════════════════════════════════════════════════╝"
+  log_info "  incoming     : $VM2_INCOMING_DIR"
+  log_info "  encrypted    : $VM2_ENCRYPTED_ROOT"
+  log_info "  restore-reqs : $VM2_RESTORE_REQUEST_DIR"
+  log_info "  outgoing     : $VM2_OUTGOING_ROOT"
+  log_info "  poll_seconds : $VM2_POLL_SECONDS"
 
-  if [[ -n "$VM2_UPLOAD_GENERAL_CMD" ]]; then
-    log "  cloud general  : ENABLED"
+  if [[ "$VM2_ENABLE_GENERAL_UPLOAD" == "1" && -n "$VM2_UPLOAD_GENERAL_CMD" ]]; then
+    log_info "  cloud general  : ENABLED"
   else
-    log "  cloud general  : disabled (set VM2_UPLOAD_GENERAL_CMD to enable)"
+    log_info "  cloud general  : disabled"
   fi
   if [[ "$VM2_ENABLE_IMMUTABLE_UPLOAD" == "1" && -n "$VM2_UPLOAD_IMMUTABLE_CMD" ]]; then
-    log "  cloud immutable: ENABLED"
+    log_info "  cloud immutable: ENABLED"
   else
-    log "  cloud immutable: disabled"
+    log_info "  cloud immutable: disabled"
   fi
 
   # ── named pipe for backup→listener signalling ───────────────────────────────
@@ -421,14 +442,14 @@ main() {
   mkfifo "$SIGNAL_PIPE"
 
   # ── start backup worker in background ──────────────────────────────────────
-  log "starting backup worker (background) …"
+  log_info "starting backup worker (background) …"
   run_backup_loop "$SIGNAL_PIPE" &
   BACKUP_PID=$!
-  log "backup worker PID: $BACKUP_PID"
+  log_info "backup worker PID: $BACKUP_PID"
 
   # ── start restore listener in foreground ────────────────────────────────────
-  log "starting restore listener (foreground) …"
-  log "  drop a JSON file into $VM2_RESTORE_REQUEST_DIR to trigger restore"
+  log_info "starting restore listener (foreground) …"
+  log_info "  drop a JSON file into $VM2_RESTORE_REQUEST_DIR to trigger restore"
   run_restore_listener "$SIGNAL_PIPE"
 }
 

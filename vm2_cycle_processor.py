@@ -507,7 +507,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         _log(f"cannot create output directories (need write access): {exc}")
         return 3
 
-    upload_general_cmd = os.environ.get("VM2_UPLOAD_GENERAL_CMD")
+    general_enabled = _env_flag("VM2_ENABLE_GENERAL_UPLOAD", True)
+    upload_general_cmd = os.environ.get("VM2_UPLOAD_GENERAL_CMD") if general_enabled else None
     immutable_enabled = _env_flag("VM2_ENABLE_IMMUTABLE_UPLOAD", False)
     upload_immutable_cmd = os.environ.get("VM2_UPLOAD_IMMUTABLE_CMD") if immutable_enabled else None
 
