@@ -16,6 +16,9 @@ JAKARTA_TZ = timezone(timedelta(hours=7))
 def now_iso_jakarta() -> str:
     return datetime.now(JAKARTA_TZ).replace(microsecond=0).isoformat()
 
+
+import sys
+
 LOG_FILE = "/home/primary/utilities/backup/backup.log"
 
 def _isatty() -> bool:
@@ -39,13 +42,25 @@ def bad_tag() -> str: return _c("<error>", "31")
 def info_tag() -> str: return _c("<info>", "36")
 def warn_tag() -> str: return _c("<warn>", "33")
 
+def _tag_good() -> str: return good_tag()
+def _tag_bad() -> str: return bad_tag()
+def _tag_info() -> str: return info_tag()
+
 def _log(scope: str, tag: str, msg: str) -> None:
+    # Strip ANSI color codes for file logging
+    import re
     ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
     clean_tag = ansi_escape.sub('', tag)
+    
+    # ensure tidy formatting
     term_line = f"{scope:<10} {tag:<8} {msg}"
     print(term_line)
+    
     try:
-        ts = now_iso_jakarta()
+        # Jakarta tz
+        import datetime
+        tz = datetime.timezone(datetime.timedelta(hours=7))
+        ts = datetime.datetime.now(tz).replace(microsecond=0).isoformat()
         file_line = f"[{ts}] {scope:<10} {clean_tag:<8} {msg}\n"
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(file_line)
@@ -100,6 +115,7 @@ def _delta(cur: Totals, prev: Totals | None) -> Totals:
         return Totals(0, 0, 0)
     return Totals(cur.a - prev.a, cur.b - prev.b, cur.c - prev.c)
 
+
 def read_pg_totals(*, container: str) -> tuple[Totals | None, str | None, float]:
     cmd = [
         "docker", "exec", "-i", container,
@@ -118,6 +134,7 @@ def read_pg_totals(*, container: str) -> tuple[Totals | None, str | None, float]
         return None, f"bad_output:{last[:200]}", elapsed_ms
     return t, None, elapsed_ms
 
+
 def read_mongo_totals(*, container: str, uri: str) -> tuple[Totals | None, str | None, float]:
     cmd = [
         "docker", "exec", "-i", container,
@@ -135,6 +152,7 @@ def read_mongo_totals(*, container: str, uri: str) -> tuple[Totals | None, str |
         return None, f"bad_output:{last[:200]}", elapsed_ms
     return t, None, elapsed_ms
 
+
 def read_unstructured_totals(*, dir_path: str) -> tuple[int, int, float]:
     start = time.perf_counter()
     file_count = 0
@@ -151,6 +169,7 @@ def read_unstructured_totals(*, dir_path: str) -> tuple[int, int, float]:
         pass
     elapsed_ms = (time.perf_counter() - start) * 1000.0
     return file_count, total_bytes, elapsed_ms
+
 
 def write_resource_row(*, out_csv: str, disk_path: str) -> tuple[bool, str]:
     cmd = [sys.executable, os.path.join(os.path.dirname(__file__), "resource_monitor.py"), "--out", out_csv, "--disk-path", disk_path]
@@ -182,9 +201,51 @@ def main() -> int:
     unstructured_csv = os.path.join(out_dir, "unstructured_totals.csv")
     res_csv = os.path.join(out_dir, "resource_usage.csv")
 
-    ensure_csv_header(pg_csv, ["timestamp", "db", "action", "customers_added", "products_added", "orders_added", "customers_total", "products_total", "orders_total", "latency_ms"])
-    ensure_csv_header(mongo_csv, ["timestamp", "db", "action", "products_added", "users_added", "orders_added", "products_total", "users_total", "orders_total", "latency_ms"])
-    ensure_csv_header(unstructured_csv, ["timestamp", "db", "action", "files_added", "bytes_added", "files_total", "bytes_total", "latency_ms"])
+    ensure_csv_header(
+        pg_csv,
+        [
+            "timestamp",
+            "db",
+            "action",
+            "customers_added",
+            "products_added",
+            "orders_added",
+            "customers_total",
+            "products_total",
+            "orders_total",
+            "latency_ms",
+        ],
+    )
+    ensure_csv_header(
+        mongo_csv,
+        [
+            "timestamp",
+            "db",
+            "action",
+            "products_added",
+            "users_added",
+            "orders_added",
+            "products_total",
+            "users_total",
+            "orders_total",
+            "latency_ms",
+        ],
+    )
+    ensure_csv_header(
+        unstructured_csv,
+        [
+            "timestamp",
+            "db",
+            "action",
+            "files_added",
+            "bytes_added",
+            "files_total",
+            "bytes_total",
+            "latency_ms",
+        ],
+    )
+
+    # resource_monitor already ensures its own header
 
     prev_pg: Totals | None = None
     prev_mongo: Totals | None = None
