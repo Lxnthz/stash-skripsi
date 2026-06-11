@@ -39,13 +39,16 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 from pathlib import Path
 from typing import Optional
 
+# Allow `from lib...` when run as a script.
 _THIS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_THIS_DIR))
 
 from lib.decrypt_aesgcm_b64 import decrypt_b64_aes256gcm_to_file  # noqa: E402
+from lib.telemetry import WorkflowTelemetry, write_telemetry  # noqa: E402
 from lib.fsutil import ensure_dir_copy_atomic, ensure_dirs  # noqa: E402
 
 
@@ -189,35 +192,6 @@ def _extract_tar(tar_path: Path, out_dir: Path) -> None:
         tf.extractall(path=out_dir, members=members)
 
 
-def _restore_from_local_encrypted(
-    *,
-    key: bytes,
-    encrypted_root: Path,
-    chain_v: str,
-    cycle_id: str,
-    outgoing_root: Path,
-) -> Path:
-    """Decrypt local encrypted artifact → outgoing/<chain-v>/<cycle_id>/"""
-    b64_path = encrypted_root / chain_v / f"{cycle_id}.tar.aes256gcm.b64"
-    if not b64_path.is_file():
-        raise RuntimeError(f"missing encrypted artifact: {b64_path}")
-
-    chain_outgoing = outgoing_root / chain_v
-    chain_outgoing.mkdir(parents=True, exist_ok=True)
-
-    with tempfile.TemporaryDirectory(prefix=f"vm2-recover-{cycle_id}-") as td:
-        tar_path = Path(td) / f"{cycle_id}.tar"
-        decrypt_b64_aes256gcm_to_file(key=key, in_b64_path=b64_path, out_path=tar_path)
-        # Tar contains chain-v/cycle_id/ at top level; extract into outgoing_root.
-        _extract_tar(tar_path, outgoing_root)
-
-    restored = chain_outgoing / cycle_id
-    if not restored.is_dir():
-        raise RuntimeError(f"expected restored cycle dir not found: {restored}")
-    _verify_cycle_ready(restored)
-    return restored
-
-
 def _restore_from_cloud(
     *,
     key: bytes,
@@ -225,7 +199,7 @@ def _restore_from_cloud(
     chain_v: str,
     cycle_id: str,
     outgoing_root: Path,
-) -> Path:
+) -> tuple[Path, float, float, int, int]:
     """Download + decrypt encrypted artifact from cloud → outgoing/<chain-v>/<cycle_id>/"""
     _require_rclone()
     chain_outgoing = outgoing_root / chain_v
@@ -236,17 +210,23 @@ def _restore_from_cloud(
         b64_leaf = f"{cycle_id}.tar.aes256gcm.b64"
         remote_b64 = _rclone_join(_rclone_join(rclone_remote, chain_v), b64_leaf)
         local_b64 = td_path / b64_leaf
+        cloud_start = time.time()
         _rclone_copyto(remote_b64, local_b64)
+        cloud_time = round(time.time() - cloud_start, 4)
 
         tar_path = td_path / f"{cycle_id}.tar"
+        dec_start = time.time()
         decrypt_b64_aes256gcm_to_file(key=key, in_b64_path=local_b64, out_path=tar_path)
+        dec_time = round(time.time() - dec_start, 4)
+        enc_size = local_b64.stat().st_size if local_b64.exists() else 0
+        raw_size = tar_path.stat().st_size if tar_path.exists() else 0
         _extract_tar(tar_path, outgoing_root)
 
     restored = chain_outgoing / cycle_id
     if not restored.is_dir():
         raise RuntimeError(f"expected restored cycle dir not found: {restored}")
     _verify_cycle_ready(restored)
-    return restored
+    return restored, dec_time, cloud_time, enc_size, raw_size
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -365,14 +345,23 @@ def main(argv: Optional[list[str]] = None) -> int:
     # ---------- restore each cycle ----------
     for cid in selected_ids:
         _log(f"  restoring {chain_v}/{cid} ...")
+        loop_start = time.time()
 
         if source == "local":
+            _log("  ↳ source: local encrypted storage")
             chain_outgoing = outgoing_root / chain_v
             chain_outgoing.mkdir(parents=True, exist_ok=True)
             local_b64 = encrypted_root / chain_v / f"{cid}.tar.aes256gcm.b64"
             with tempfile.TemporaryDirectory(prefix=f"vm2-local-{cid}-") as td:
                 tar_path = Path(td) / f"{cid}.tar"
+                _log("  ↳ decrypting AES-256-GCM + Base64 artifact...")
+                dec_start = time.time()
                 decrypt_b64_aes256gcm_to_file(key=key, in_b64_path=local_b64, out_path=tar_path)
+                dec_time = round(time.time() - dec_start, 4)
+                enc_size = local_b64.stat().st_size if local_b64.exists() else 0
+                raw_size = tar_path.stat().st_size if tar_path.exists() else 0
+                cloud_time = 0.0
+                _log("  ↳ extracting raw tar archive...")
                 _extract_tar(tar_path, outgoing_root)
             
             restored = chain_outgoing / cid
@@ -381,7 +370,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             _verify_cycle_ready(restored)
 
         elif source in ("general", "immutable"):
-            _restore_from_cloud(
+            _log(f"  ↳ source: cloud bucket ({source})")
+            _log("  ↳ downloading & decrypting AES-256-GCM + Base64 artifact...")
+            _, dec_time, cloud_time, enc_size, raw_size = _restore_from_cloud(
                 key=key,
                 rclone_remote=rclone_remote,
                 chain_v=chain_v,
@@ -389,9 +380,32 @@ def main(argv: Optional[list[str]] = None) -> int:
                 outgoing_root=outgoing_root,
             )
 
+        vm1_time = 0.0
         if args.send_to_vm1:
+            _log(f"  ↳ sending decrypted cycle back to VM1 ({args.vm1_dest_root})...")
             staged = outgoing_root / chain_v / cid
+            vm1_start = time.time()
             _rsync_send_dir(staged, args.vm1_dest_root, chain_v, cid)
+            vm1_time = round(time.time() - vm1_start, 4)
+
+        telemetry = WorkflowTelemetry(
+            timestamp=_dt.datetime.utcnow().isoformat() + "Z",
+            workflow_type="restore",
+            chain_v=chain_v,
+            cycle_id=cid,
+            raw_size_bytes=raw_size,
+            encrypted_size_bytes=enc_size,
+            duration_aes256_b64_sec=dec_time,
+            duration_cloud_transfer_sec=cloud_time,
+            duration_vm1_transfer_sec=vm1_time,
+            total_workflow_sec=round(time.time() - loop_start, 4)
+        )
+        try:
+            write_telemetry(telemetry)
+        except Exception as exc:
+            _log(f"warning: failed to write telemetry: {exc}")
+            
+        _log(f"━━ done restoring {chain_v}/{cid} ━━")
 
     _log(f"recovery export complete: {len(selected_ids)} cycle(s) from {chain_v}")
     return 0

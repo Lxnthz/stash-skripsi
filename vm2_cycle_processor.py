@@ -65,6 +65,7 @@ sys.path.insert(0, str(_THIS_DIR))
 
 from lib.aesgcm_b64 import EncryptResult, encrypt_file_to_b64_aes256gcm  # noqa: E402
 from lib.fsutil import SingleInstanceLock, atomic_write_json, ensure_dir_copy_atomic, ensure_dirs  # noqa: E402
+from lib.telemetry import WorkflowTelemetry, write_telemetry  # noqa: E402
 
 
 NONCE_LEN = 12
@@ -184,12 +185,13 @@ def _maybe_upload(
     chain_v: str,
     files: list[Path],
     label: str,
-) -> None:
+) -> float:
     if not cmd_template:
-        return
+        return 0.0
     if marker_path.exists():
-        return
+        return 0.0
 
+    upload_start = time.time()
     for f in files:
         _run_upload_cmd(cmd_template, src=f, cycle_id=cycle_id, chain_v=chain_v)
 
@@ -197,6 +199,9 @@ def _maybe_upload(
         marker_path,
         {"cycle_id": cycle_id, "chain_v": chain_v, "uploaded_at": _iso_now(), "target": label},
     )
+    _log(f"upload [{label}] succeeded for {chain_v}/{cycle_id}")
+
+    return round(time.time() - upload_start, 4)
 
 
 def _verify_checksums_in_dir(dir_path: Path) -> None:
@@ -318,8 +323,9 @@ def process_one_cycle(
     if not _verify_cycle_ready(incoming_cycle):
         return False
 
-    _log(f"processing cycle {chain_v}/{cycle_id}")
+    _log(f"━━ processing cycle {chain_v}/{cycle_id} ━━")
 
+    _log("  ↳ verifying checksums...")
     _verify_checksums_in_dir(incoming_cycle)
 
     cycle_timestamp: Optional[str] = None
@@ -340,14 +346,22 @@ def process_one_cycle(
         if tar_tmp.exists():
             tar_tmp.unlink()
         # Tar top-level path is chain-v/cycle_id so extraction preserves structure.
+        _log("  ↳ creating tar archive...")
         _create_tar_from_dir(
             incoming_cycle,
             arcname=f"{chain_v}/{cycle_id}",
             tar_path=tar_tmp,
         )
 
+        workflow_start = time.time()
         # 3) Encrypt tar → base64 artifact.
+        _log("  ↳ encrypting with AES-256-GCM + Base64...")
+        enc_start = time.time()
         enc = encrypt_file_to_b64_aes256gcm(key=key, plaintext_path=tar_tmp, out_b64_path=outputs.encrypted_b64)
+        enc_duration = round(time.time() - enc_start, 4)
+        raw_size = tar_tmp.stat().st_size if tar_tmp.exists() else 0
+        enc_size = outputs.encrypted_b64.stat().st_size if outputs.encrypted_b64.exists() else 0
+        
         _write_meta_atomic(
             meta_path=outputs.encrypted_meta,
             cycle_id=cycle_id,
@@ -357,7 +371,8 @@ def process_one_cycle(
         )
 
     # 4) Optional cloud uploads (two targets).
-    _maybe_upload(
+    _log("  ↳ syncing artifacts to cloud...")
+    up_time1 = _maybe_upload(
         cmd_template=upload_general_cmd,
         marker_path=outputs.uploaded_general_marker,
         cycle_id=cycle_id,
@@ -365,7 +380,7 @@ def process_one_cycle(
         files=[outputs.encrypted_b64, outputs.encrypted_meta],
         label="general",
     )
-    _maybe_upload(
+    up_time2 = _maybe_upload(
         cmd_template=upload_immutable_cmd,
         marker_path=outputs.uploaded_immutable_marker,
         cycle_id=cycle_id,
@@ -375,6 +390,7 @@ def process_one_cycle(
     )
 
     # 5) Write done marker last (idempotency).
+    _log("  ↳ finalizing idempotency markers & cleaning up...")
     _write_done_marker(outputs.done_marker, cycle_id, chain_v, cycle_timestamp)
 
     if tar_tmp is not None:
@@ -390,7 +406,25 @@ def process_one_cycle(
         except Exception as exc:
             _log(f"warning: failed to delete incoming cycle {chain_v}/{cycle_id}: {exc}")
 
-    _log(f"done cycle {chain_v}/{cycle_id}")
+    total_duration = round(time.time() - workflow_start, 4) if 'workflow_start' in locals() else 0.0
+    if 'enc_duration' in locals():
+        telemetry = WorkflowTelemetry(
+            timestamp=_dt.datetime.utcnow().isoformat() + "Z",
+            workflow_type="backup",
+            chain_v=chain_v,
+            cycle_id=cycle_id,
+            raw_size_bytes=raw_size,
+            encrypted_size_bytes=enc_size,
+            duration_aes256_b64_sec=enc_duration,
+            duration_cloud_transfer_sec=round((up_time1 or 0) + (up_time2 or 0), 4),
+            total_workflow_sec=total_duration
+        )
+        try:
+            write_telemetry(telemetry)
+        except Exception as exc:
+            _log(f"warning: failed to write telemetry: {exc}")
+
+    _log(f"━━ done cycle {chain_v}/{cycle_id} ━━")
     return True
 
 
