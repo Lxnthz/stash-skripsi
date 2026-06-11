@@ -96,3 +96,30 @@
 [2026-06-11T18:06:25+07:00] main       <info>   staging_root=/home/primary/data/backup-staging
 [2026-06-11T18:06:25+07:00] main       <info>   state_db=/home/primary/data/backup-metadata/pfc_index.db
 [2026-06-11T18:06:25+07:00] main       <info>   retention max_cycles=30 max_bytes=50.00 GiB cycle_cap=10.00 GiB
+[2026-06-11T20:29:23+0700] main       <info>   RPO=5min  transfer=1  target=recovery@192.168.10.129:/home/recovery/local-backup/incoming
+[2026-06-11T20:29:23+0700] main       <info>   Orchestrator: /home/primary/utilities/backup/backup_orchestrator.py
+[2026-06-11T20:29:23+0700] main       <info>   Env:          /home/primary/utilities/backup/backup.env
+[2026-06-11T20:29:23+0700] main       <info>   Chain init:   chain-v2
+[2026-06-11T20:29:23+0700] main       <info>   ──────────────────────────────────────────────────────
+[2026-06-11T20:29:23+0700] main       <info>   Cycle #1 starting
+[2026-06-11T20:29:23+07:00] main       <info>   starting cycle=20260611_202923 at=2026-06-11T20:29:23.644764+07:00
+[2026-06-11T20:29:23+07:00] main       <info>   output_root=/home/primary/data/backup-cycles
+[2026-06-11T20:29:23+07:00] main       <info>   staging_root=/home/primary/data/backup-staging
+[2026-06-11T20:29:23+07:00] main       <info>   state_db=/home/primary/data/backup-metadata/pfc_index.db
+[2026-06-11T20:29:23+07:00] main       <info>   retention max_cycles=30 max_bytes=50.00 GiB cycle_cap=10.00 GiB
+[2026-06-11T20:29:23+07:00] main       <info>   chain_version=chain-v1 versioned_cycles_root=/home/primary/data/backup-cycles/chain-v1
+[2026-06-11T20:29:23+07:00] main       <info>   last_cycle_ts=1781173379 (2026-06-11T17:22:59+07:00)
+[2026-06-11T20:29:37+07:00] mongo      <good>   oplog compressed raw=16.66 MiB stored=953.61 KiB ratio=0.056 elapsed=0.21s
+[2026-06-11T20:29:37+07:00] fixtures   <good>   seeded target=/home/primary/data/unstructured/fixtures copied=0 skipped=25 bytes=0 elapsed=0.00s
+[2026-06-11T20:29:41+07:00] main       <info>   staging_size=599.66 MiB checked_in=0.00s
+[2026-06-11T20:29:43+07:00] main       <good>   wrote checksums=/home/primary/data/backup-staging/cycle_20260611_202923.tmp/checksums.sha256
+[2026-06-11T20:29:43+07:00] main       <good>   finalized dir elapsed=0.01s
+[2026-06-11T20:29:45+07:00] verify     <good>   ok elapsed=1.58s
+[2026-06-11T20:29:45+07:00] pg         <info>   state pg_last_wal_fname=00000001000000000000002C
+[2026-06-11T20:29:45+07:00] main       <info>   retention elapsed=0.00s
+[2026-06-11T20:29:45+07:00] transfer   <info>   pushing to 1 destination(s) as 'chain-v1/20260611_202923': ['recovery@192.168.10.129:/home/recovery/local-backup/incoming']
+[2026-06-11T20:29:56+07:00] transfer   <good>   all 1 destination(s) OK elapsed=10.84s
+[2026-06-11T20:29:56+07:00] main       <info>   Deleting local cycle since it was transferred: /home/primary/data/backup-cycles/chain-v1/20260611_202923
+[2026-06-11T20:29:56+07:00] main       <good>   completed cycle=20260611_202923 chain=chain-v1 elapsed=32.93s
+[2026-06-11T20:29:56+0700] main       <good>   Cycle #1 completed OK
+[2026-06-11T20:29:56+0700] main       <info>   Sleeping 5m until next cycle …
