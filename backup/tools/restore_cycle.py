@@ -84,6 +84,7 @@ def _log(prefix: str, msg: str, tag: str = "<info>") -> None:
     elif "<warn>" in tag: tag = warn_tag()
     else: tag = info_tag()
     _log_base(prefix, tag, msg)
+TOOLS_DIR = os.path.abspath(os.path.dirname(__file__))
 BACKUP_ROOT = os.path.abspath(os.path.join(TOOLS_DIR, ".."))
 if BACKUP_ROOT not in sys.path:
     sys.path.insert(0, BACKUP_ROOT)
@@ -709,13 +710,18 @@ def restore_cycle(
 
     # Safely clear only the artifact output directories. Do not wipe out_root entirely.
     for d in [out_unstructured, out_pg, out_mongo]:
+        if d == base_unstructured_dir:
+            continue
         _ensure_empty_dir(d)
 
     # 1) Base copy for unstructured
-    _log("[PFC]", f"Copying base unstructured -> {out_unstructured}")
-    started = time.perf_counter()
-    base_files, base_bytes = _copy_tree(base_unstructured_dir, out_unstructured)
-    _log("[PFC]", f"Base copy: files={base_files} bytes={base_bytes} elapsed={time.perf_counter() - started:.2f}s")
+    if base_unstructured_dir != out_unstructured:
+        _log("[PFC]", f"Copying base unstructured -> {out_unstructured}")
+        started = time.perf_counter()
+        base_files, base_bytes = _copy_tree(base_unstructured_dir, out_unstructured)
+        _log("[PFC]", f"Base copy: files={base_files} bytes={base_bytes} elapsed={time.perf_counter() - started:.2f}s")
+    else:
+        _log("[PFC]", f"Base unstructured and out_unstructured are identical ({out_unstructured}). Applying deltas in-place.")
 
     # 2) Apply PFC deltas across cycle chain
     applied = 0
@@ -728,6 +734,16 @@ def restore_cycle(
         manifest = _read_manifest(cycle_dir)
 
         pfc = manifest.get("pfc") or {}
+        unstr_base = manifest.get("unstructured_basebackup")
+        if unstr_base:
+            rel_art = unstr_base.get("artifact")
+            if rel_art:
+                art_path = os.path.join(cycle_dir, rel_art)
+                if os.path.isfile(art_path):
+                    _log("[PFC]", f"Extracting unstructured basebackup -> {out_unstructured}")
+                    _run(["tar", "-xzf", art_path, "-C", out_unstructured], check=True)
+                else:
+                    _log("[PFC]", f"Warning: unstructured basebackup artifact missing: {art_path}")
         deltas = pfc.get("deltas") if isinstance(pfc, dict) else None
         if not isinstance(deltas, list):
             deltas = []

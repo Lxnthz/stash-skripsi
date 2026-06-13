@@ -14,9 +14,12 @@ def _fmt_elapsed(seconds: float) -> str:
     return f"{mins}m{secs:.1f}s"
 
 
-def _should_take_basebackup(*, conn_state, key_cycle: str, every_n: int) -> bool:
+def _should_take_basebackup(*, conn_state, key_cycle: str, every_n: int, current_chain: str) -> bool:
     last = get_metadata(conn_state, key_cycle)
     if not last:
+        return True
+    last_chain = get_metadata(conn_state, key_cycle + ":chain")
+    if last_chain != current_chain:
         return True
     if every_n and every_n > 0:
         try:
@@ -41,6 +44,7 @@ def take_pg_basebackup_into_cycle(
     pg_wal_archive_container_path: str,
     checkpoint: str,
     max_rate: str,
+    chain_version: str,
 ) -> dict | None:
     """Create a pg_basebackup (tar+gzip) and place base.tar.gz + pg_wal.tar.gz into cycle_tmp/pg/basebackup/."""
 
@@ -143,6 +147,7 @@ def take_pg_basebackup_into_cycle(
     set_metadata(conn_state, "pg_last_basebackup_cycle", cycle_id)
     try:
         set_metadata(conn_state, "pg_last_basebackup_cycle:n", str(int(get_metadata(conn_state, "cycle_num") or "0")))
+        set_metadata(conn_state, "pg_last_basebackup_cycle:chain", chain_version)
     except Exception:
         pass
 
@@ -155,7 +160,7 @@ def take_pg_basebackup_into_cycle(
     }
 
 
-def maybe_take_pg_basebackup(*, cfg, conn_state, cycle_id: str, cycle_tmp: str) -> dict | None:
+def maybe_take_pg_basebackup(*, cfg, conn_state, cycle_id: str, cycle_tmp: str, chain_version: str) -> dict | None:
     if not getattr(cfg, "pg_basebackup_enable", False):
         print("[PG][BASE] Disabled (PG_BASEBACKUP_ENABLE=0)")
         return None
@@ -174,18 +179,21 @@ def maybe_take_pg_basebackup(*, cfg, conn_state, cycle_id: str, cycle_tmp: str) 
             pg_wal_archive_container_path=cfg.pg_wal_archive_container_path,
             checkpoint=cfg.pg_basebackup_checkpoint,
             max_rate=cfg.pg_basebackup_max_rate,
+            chain_version=chain_version,
         )
 
     if not _should_take_basebackup(
         conn_state=conn_state,
         key_cycle="pg_last_basebackup_cycle",
         every_n=int(getattr(cfg, "pg_basebackup_every_n_cycles", 0) or 0),
+        current_chain=chain_version,
     ):
         try:
             cur_n = int(get_metadata(conn_state, "cycle_num") or "0")
             last_n = int(get_metadata(conn_state, "pg_last_basebackup_cycle:n") or "0")
+            last_chain = get_metadata(conn_state, "pg_last_basebackup_cycle:chain")
             every_n = int(getattr(cfg, "pg_basebackup_every_n_cycles", 0) or 0)
-            print(f"[PG][BASE] Skipped (not due yet): cycle_num={cur_n} last_base_n={last_n} every_n={every_n}")
+            print(f"[PG][BASE] Skipped (not due yet): cycle_num={cur_n} last_base_n={last_n} last_chain={last_chain} cur_chain={chain_version} every_n={every_n}")
         except Exception:
             print("[PG][BASE] Skipped (not due yet)")
         return None
@@ -202,6 +210,7 @@ def maybe_take_pg_basebackup(*, cfg, conn_state, cycle_id: str, cycle_tmp: str) 
         pg_wal_archive_container_path=cfg.pg_wal_archive_container_path,
         checkpoint=cfg.pg_basebackup_checkpoint,
         max_rate=cfg.pg_basebackup_max_rate,
+        chain_version=chain_version,
     )
 
 

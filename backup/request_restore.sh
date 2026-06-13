@@ -169,7 +169,7 @@ fi
 _good "SSH OK"
 
 # Step 1 – Build request JSON
-REQUEST_ID="restore-$(date +%s)"
+REQUEST_ID="restore-$(date +%s)-$(openssl rand -hex 3)"
 
 BUCKET_URL=""
 if [[ "${OPT_SOURCE}" == "general" ]]; then

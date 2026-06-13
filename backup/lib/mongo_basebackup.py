@@ -13,9 +13,12 @@ def _fmt_elapsed(seconds: float) -> str:
     return f"{mins}m{secs:.1f}s"
 
 
-def _should_take_basebackup(*, conn_state, key_cycle: str, every_n: int) -> bool:
+def _should_take_basebackup(*, conn_state, key_cycle: str, every_n: int, current_chain: str) -> bool:
     last = get_metadata(conn_state, key_cycle)
     if not last:
+        return True
+    last_chain = get_metadata(conn_state, key_cycle + ":chain")
+    if last_chain != current_chain:
         return True
     if every_n and every_n > 0:
         try:
@@ -36,6 +39,7 @@ def take_mongo_basebackup_into_cycle(
     mongo_uri: str,
     db_name: str,
     include_oplog: bool,
+    chain_version: str,
 ) -> dict | None:
     """Create a mongodump archive (gzip) and place it into cycle_tmp/mongo/basebackup/mongodump.archive.gz."""
 
@@ -97,6 +101,7 @@ def take_mongo_basebackup_into_cycle(
     set_metadata(conn_state, "mongo_last_basebackup_cycle", cycle_id)
     try:
         set_metadata(conn_state, "mongo_last_basebackup_cycle:n", str(int(get_metadata(conn_state, "cycle_num") or "0")))
+        set_metadata(conn_state, "mongo_last_basebackup_cycle:chain", chain_version)
     except Exception:
         pass
 
@@ -109,7 +114,7 @@ def take_mongo_basebackup_into_cycle(
     }
 
 
-def maybe_take_mongo_basebackup(*, cfg, conn_state, cycle_id: str, cycle_tmp: str, mongo_uri: str) -> dict | None:
+def maybe_take_mongo_basebackup(*, cfg, conn_state, cycle_id: str, cycle_tmp: str, mongo_uri: str, chain_version: str) -> dict | None:
     if not getattr(cfg, "mongo_basebackup_enable", False):
         print("[MONGO][BASE] Disabled (MONGO_BASEBACKUP_ENABLE=0)")
         return None
@@ -124,18 +129,21 @@ def maybe_take_mongo_basebackup(*, cfg, conn_state, cycle_id: str, cycle_tmp: st
             mongo_uri=mongo_uri,
             db_name=cfg.mongo_basebackup_db,
             include_oplog=bool(cfg.mongo_basebackup_oplog),
+            chain_version=chain_version,
         )
 
     if not _should_take_basebackup(
         conn_state=conn_state,
         key_cycle="mongo_last_basebackup_cycle",
         every_n=int(getattr(cfg, "mongo_basebackup_every_n_cycles", 0) or 0),
+        current_chain=chain_version,
     ):
         try:
             cur_n = int(get_metadata(conn_state, "cycle_num") or "0")
             last_n = int(get_metadata(conn_state, "mongo_last_basebackup_cycle:n") or "0")
+            last_chain = get_metadata(conn_state, "mongo_last_basebackup_cycle:chain")
             every_n = int(getattr(cfg, "mongo_basebackup_every_n_cycles", 0) or 0)
-            print(f"[MONGO][BASE] Skipped (not due yet): cycle_num={cur_n} last_base_n={last_n} every_n={every_n}")
+            print(f"[MONGO][BASE] Skipped (not due yet): cycle_num={cur_n} last_base_n={last_n} last_chain={last_chain} cur_chain={chain_version} every_n={every_n}")
         except Exception:
             print("[MONGO][BASE] Skipped (not due yet)")
         return None
@@ -148,6 +156,7 @@ def maybe_take_mongo_basebackup(*, cfg, conn_state, cycle_id: str, cycle_tmp: st
         mongo_uri=mongo_uri,
         db_name=cfg.mongo_basebackup_db,
         include_oplog=bool(cfg.mongo_basebackup_oplog),
+        chain_version=chain_version,
     )
 
 
