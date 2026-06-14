@@ -31,7 +31,7 @@ def main() -> int:
     cycle_num = 0
     while _now_s() < deadline:
         cycle_num += 1
-        print(f"[SIM] Running cycle #{cycle_num}")
+        print(f"sim        <info>   Running cycle #{cycle_num}")
         run_cycle(cfg)
 
         remaining = deadline - _now_s()
@@ -39,10 +39,10 @@ def main() -> int:
             break
 
         sleep_s = min(interval_s, int(remaining))
-        print(f"[SIM] Sleeping {sleep_s}s")
+        print(f"sim        <info>   Sleeping {sleep_s}s")
         time.sleep(sleep_s)
 
-    print("[SIM] Completed simulation window")
+    print("sim        <info>   Completed simulation window")
     return 0
 
 

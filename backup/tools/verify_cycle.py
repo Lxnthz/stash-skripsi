@@ -69,19 +69,19 @@ def main() -> int:
     try:
         cycle_dir = _resolve_cycle_dir(args.cycle, cycles_root=os.path.abspath(args.cycles_root))
     except Exception as e:
-        print(f"[FAIL] {e}")
+        print(f"<error> {e}")
         return 2
     if not os.path.isdir(cycle_dir):
-        print(f"[FAIL] Not a directory: {cycle_dir}")
+        print(f"<error> Not a directory: {cycle_dir}")
         return 2
 
     ok, errors = verify_cycle(cycle_dir, verify_raw=args.verify_raw)
     if ok:
-        print(f"[VERIFY] OK: {cycle_dir}")
+        print(f"verify     <good>   OK: {cycle_dir}")
         return 0
     for err in errors:
-        print(f"[VERIFY] FAIL: {err}")
-    print(f"[VERIFY] FAIL: {cycle_dir}")
+        print(f"verify     <error>  FAIL: {err}")
+    print(f"verify     <error>  FAIL: {cycle_dir}")
     return 2
 
 

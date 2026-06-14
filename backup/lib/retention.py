@@ -33,7 +33,7 @@ def enforce_retention(*, cycles_root: str, max_cycles: int, max_bytes: int):
     # prune by count
     while max_cycles > 0 and len(dirs) > max_cycles:
         victim = dirs.pop(0)
-        print(f"[RETENTION] Removing old cycle {victim}")
+        print(f"retention  <info>   Removing old cycle {victim}")
         shutil.rmtree(victim, ignore_errors=True)
 
     # prune by total size
@@ -42,7 +42,7 @@ def enforce_retention(*, cycles_root: str, max_cycles: int, max_bytes: int):
 
     while dirs and total_size() > max_bytes:
         victim = dirs.pop(0)
-        print(f"[RETENTION] Removing cycle to reduce size {victim}")
+        print(f"retention  <info>   Removing cycle to reduce size {victim}")
         shutil.rmtree(victim, ignore_errors=True)
 
 

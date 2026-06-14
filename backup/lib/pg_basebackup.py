@@ -45,6 +45,7 @@ def take_pg_basebackup_into_cycle(
     checkpoint: str,
     max_rate: str,
     chain_version: str,
+    compress_level: int = 5,
 ) -> dict | None:
     """Create a pg_basebackup (tar+gzip) and place base.tar.gz + pg_wal.tar.gz into cycle_tmp/pg/basebackup/."""
 
@@ -67,7 +68,7 @@ def take_pg_basebackup_into_cycle(
             check=True,
         )
     except Exception as e:
-        print(f"[PG][BASE] FAIL: could not prepare tmp dir {container_tmp_dir}: {e}")
+        print(f"pg         <error>  [BASE] FAIL: could not prepare tmp dir {container_tmp_dir}: {e}")
         return None
 
     cmd = [
@@ -89,7 +90,6 @@ def take_pg_basebackup_into_cycle(
         container_tmp_dir,
         "-F",
         "t",
-        "-z",
         "-X",
         "fetch",
         "--checkpoint",
@@ -99,7 +99,7 @@ def take_pg_basebackup_into_cycle(
         "-P",
     ]
 
-    print(f"[PG][BASE] Starting pg_basebackup -> {container_tmp_dir} (max_rate={max_rate}, checkpoint={checkpoint})")
+    print(f"pg         <info>   [BASE] Starting pg_basebackup -> {container_tmp_dir} (max_rate={max_rate}, checkpoint={checkpoint})")
     try:
         subprocess.run(cmd, check=True)
     except Exception as e:
@@ -115,7 +115,7 @@ def take_pg_basebackup_into_cycle(
             shutil.rmtree(host_tmp_dir, ignore_errors=True)
         except Exception:
             pass
-        print(f"[PG][BASE] FAIL: pg_basebackup failed: {e}")
+        print(f"pg         <error>  [BASE] FAIL: pg_basebackup failed: {e}")
         return None
 
     out_dir = os.path.join(cycle_tmp, "pg", "basebackup")
@@ -123,17 +123,16 @@ def take_pg_basebackup_into_cycle(
 
     artifacts = []
     copied_bytes = 0
-    for name in ("base.tar.gz", "pg_wal.tar.gz"):
+    from .io_utils import zstd_compress_file
+    for name in ("base.tar", "pg_wal.tar"):
         src = os.path.join(host_tmp_dir, name)
         if not os.path.isfile(src):
             continue
-        dst = os.path.join(out_dir, name)
-        shutil.copy2(src, dst)
+        dst = os.path.join(out_dir, name + ".zst")
+        print(f"pg         <info>   Compressing {name} -> {dst} (zstd level={compress_level})")
+        meta = zstd_compress_file(src, dst, level=compress_level)
         artifacts.append(os.path.relpath(dst, cycle_tmp))
-        try:
-            copied_bytes += int(os.path.getsize(dst))
-        except Exception:
-            pass
+        copied_bytes += meta.get("bytes_out", 0)
 
     # Cleanup temporary basebackup directory
     try:
@@ -142,7 +141,7 @@ def take_pg_basebackup_into_cycle(
         pass
 
     elapsed = time.perf_counter() - started
-    print(f"[PG][BASE] Done: artifacts={len(artifacts)} bytes={copied_bytes} elapsed={_fmt_elapsed(elapsed)}")
+    print(f"pg         <good>   [BASE] Done: artifacts={len(artifacts)} bytes={copied_bytes} elapsed={_fmt_elapsed(elapsed)}")
 
     set_metadata(conn_state, "pg_last_basebackup_cycle", cycle_id)
     try:
@@ -157,16 +156,18 @@ def take_pg_basebackup_into_cycle(
         "xlog_method": "fetch",
         "checkpoint": str(checkpoint),
         "max_rate": str(max_rate),
+        "stored_bytes": copied_bytes,
+        "raw_bytes": copied_bytes,
     }
 
 
 def maybe_take_pg_basebackup(*, cfg, conn_state, cycle_id: str, cycle_tmp: str, chain_version: str) -> dict | None:
     if not getattr(cfg, "pg_basebackup_enable", False):
-        print("[PG][BASE] Disabled (PG_BASEBACKUP_ENABLE=0)")
+        print("pg         <info>   [BASE] Disabled (PG_BASEBACKUP_ENABLE=0)")
         return None
 
     if getattr(cfg, "pg_basebackup_force", False):
-        print("[PG][BASE] Forced (PG_BASEBACKUP_FORCE=1)")
+        print("pg         <info>   [BASE] Forced (PG_BASEBACKUP_FORCE=1)")
         return take_pg_basebackup_into_cycle(
             conn_state=conn_state,
             cycle_id=cycle_id,
@@ -180,6 +181,7 @@ def maybe_take_pg_basebackup(*, cfg, conn_state, cycle_id: str, cycle_tmp: str, 
             checkpoint=cfg.pg_basebackup_checkpoint,
             max_rate=cfg.pg_basebackup_max_rate,
             chain_version=chain_version,
+            compress_level=cfg.pg_compress_level,
         )
 
     if not _should_take_basebackup(
@@ -193,9 +195,9 @@ def maybe_take_pg_basebackup(*, cfg, conn_state, cycle_id: str, cycle_tmp: str, 
             last_n = int(get_metadata(conn_state, "pg_last_basebackup_cycle:n") or "0")
             last_chain = get_metadata(conn_state, "pg_last_basebackup_cycle:chain")
             every_n = int(getattr(cfg, "pg_basebackup_every_n_cycles", 0) or 0)
-            print(f"[PG][BASE] Skipped (not due yet): cycle_num={cur_n} last_base_n={last_n} last_chain={last_chain} cur_chain={chain_version} every_n={every_n}")
+            print(f"pg         <info>   [BASE] Skipped (not due yet): cycle_num={cur_n} last_base_n={last_n} last_chain={last_chain} cur_chain={chain_version} every_n={every_n}")
         except Exception:
-            print("[PG][BASE] Skipped (not due yet)")
+            print("pg         <info>   [BASE] Skipped (not due yet)")
         return None
 
     return take_pg_basebackup_into_cycle(
@@ -211,6 +213,7 @@ def maybe_take_pg_basebackup(*, cfg, conn_state, cycle_id: str, cycle_tmp: str, 
         checkpoint=cfg.pg_basebackup_checkpoint,
         max_rate=cfg.pg_basebackup_max_rate,
         chain_version=chain_version,
+        compress_level=cfg.pg_compress_level,
     )
 
 

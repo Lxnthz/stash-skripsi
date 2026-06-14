@@ -31,16 +31,17 @@ MAX_CONSECUTIVE_FAILS=3     # Abort the loop after this many back-to-back failur
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKUP_ENV="${SCRIPT_DIR}/backup.env"
 ORCHESTRATOR="${SCRIPT_DIR}/backup_orchestrator.py"
+MONITOR="${SCRIPT_DIR}/tools/resource_telemetry.py"
 
 # ---------------------------------------------------------------------------
 # Bootstrap
 # ---------------------------------------------------------------------------
 if [[ ! -f "${BACKUP_ENV}" ]]; then
-    echo "[FAIL] backup.env not found at: ${BACKUP_ENV}" >&2
+    echo "<error> backup.env not found at: ${BACKUP_ENV}" >&2
     exit 1
 fi
 if [[ ! -f "${ORCHESTRATOR}" ]]; then
-    echo "[FAIL] backup_orchestrator.py not found at: ${ORCHESTRATOR}" >&2
+    echo "<error> backup_orchestrator.py not found at: ${ORCHESTRATOR}" >&2
     exit 1
 fi
 
@@ -53,7 +54,7 @@ source "${BACKUP_ENV}"
 # If not root, re-exec via sudo -E (preserves env from backup.env).
 # ---------------------------------------------------------------------------
 if [[ "${EUID}" -ne 0 ]]; then
-    echo "[info] Not root — re-executing via: sudo -E bash $0 $*"
+    echo "<info> Not root — re-executing via: sudo -E bash $0 $*"
     exec sudo -E bash "$0" "$@"
 fi
 
@@ -80,7 +81,7 @@ _c() {
 
 _good() {
     local scope="${LOG_SCOPE:-main}"
-    local term_msg="$(printf "%-10s %-8s %s" "$scope" "$(_c "<good>" "32")" "$*")"
+    local term_msg="$(printf "%-10s %s %s" "$scope" "$(_c "<good>  " "32")" "$*")"
     local file_msg="$(printf "%-10s %-8s %s" "$scope" "<good>" "$*")"
     echo "$term_msg"
     _log_file "$file_msg"
@@ -88,7 +89,7 @@ _good() {
 
 _info() {
     local scope="${LOG_SCOPE:-main}"
-    local term_msg="$(printf "%-10s %-8s %s" "$scope" "$(_c "<info>" "36")" "$*")"
+    local term_msg="$(printf "%-10s %s %s" "$scope" "$(_c "<info>  " "36")" "$*")"
     local file_msg="$(printf "%-10s %-8s %s" "$scope" "<info>" "$*")"
     echo "$term_msg"
     _log_file "$file_msg"
@@ -96,7 +97,7 @@ _info() {
 
 _warn() {
     local scope="${LOG_SCOPE:-main}"
-    local term_msg="$(printf "%-10s %-8s %s" "$scope" "$(_c "<warn>" "33")" "$*")"
+    local term_msg="$(printf "%-10s %s %s" "$scope" "$(_c "<warn>  " "33")" "$*")"
     local file_msg="$(printf "%-10s %-8s %s" "$scope" "<warn>" "$*")"
     echo "$term_msg"
     _log_file "$file_msg"
@@ -104,7 +105,7 @@ _warn() {
 
 _bad() {
     local scope="${LOG_SCOPE:-main}"
-    local term_msg="$(printf "%-10s %-8s %s" "$scope" "$(_c "<error>" "31")" "$*")"
+    local term_msg="$(printf "%-10s %s %s" "$scope" "$(_c "<error> " "31")" "$*")"
     local file_msg="$(printf "%-10s %-8s %s" "$scope" "<error>" "$*")"
     echo "$term_msg"
     _log_file "$file_msg"

@@ -55,16 +55,17 @@ def take_mongo_basebackup_into_cycle(
     # If oplog is enabled, ignore db_name and perform a full dump.
     effective_db = (db_name or "").strip()
     if include_oplog and effective_db:
-        print(f"[MONGO][BASE] Note: ignoring db={effective_db} because --oplog requires full dump")
+        print(f"mongo      <info>   [BASE] Note: ignoring db={effective_db} because --oplog requires full dump")
         effective_db = ""
 
+    dump_uri = mongo_uri.replace("&directConnection=true", "").replace("directConnection=true", "")
     cmd = [
         "docker",
         "exec",
         "-i",
         mongo_docker_container,
         "mongodump",
-        f"--uri={mongo_uri}",
+        f"--uri={dump_uri}",
         "--archive",
         "--gzip",
     ]
@@ -74,7 +75,7 @@ def take_mongo_basebackup_into_cycle(
         cmd.append("--oplog")
 
     db_label = effective_db if effective_db else "<all>"
-    print(f"[MONGO][BASE] Starting mongodump (db={db_label}, oplog={bool(include_oplog)}) -> {rel_artifact}")
+    print(f"mongo      <info>   [BASE] Starting mongodump (db={db_label}, oplog={bool(include_oplog)}) -> {rel_artifact}")
 
     tmp_path = out_path + ".tmp"
     try:
@@ -87,7 +88,7 @@ def take_mongo_basebackup_into_cycle(
                 os.remove(tmp_path)
         except Exception:
             pass
-        print(f"[MONGO][BASE] FAIL: mongodump failed: {e}")
+        print(f"mongo      <error>  [BASE] FAIL: mongodump failed: {e}")
         return None
 
     try:
@@ -96,7 +97,7 @@ def take_mongo_basebackup_into_cycle(
         stored_bytes = 0
 
     elapsed = time.perf_counter() - started
-    print(f"[MONGO][BASE] Done: stored_bytes={stored_bytes} elapsed={_fmt_elapsed(elapsed)}")
+    print(f"mongo      <good>   [BASE] Done: stored_bytes={stored_bytes} elapsed={_fmt_elapsed(elapsed)}")
 
     set_metadata(conn_state, "mongo_last_basebackup_cycle", cycle_id)
     try:
@@ -111,16 +112,17 @@ def take_mongo_basebackup_into_cycle(
         "db": db_name,
         "oplog": bool(include_oplog),
         "stored_bytes": stored_bytes,
+        "raw_bytes": stored_bytes,
     }
 
 
 def maybe_take_mongo_basebackup(*, cfg, conn_state, cycle_id: str, cycle_tmp: str, mongo_uri: str, chain_version: str) -> dict | None:
     if not getattr(cfg, "mongo_basebackup_enable", False):
-        print("[MONGO][BASE] Disabled (MONGO_BASEBACKUP_ENABLE=0)")
+        print("mongo      <info>   [BASE] Disabled (MONGO_BASEBACKUP_ENABLE=0)")
         return None
 
     if getattr(cfg, "mongo_basebackup_force", False):
-        print("[MONGO][BASE] Forced (MONGO_BASEBACKUP_FORCE=1)")
+        print("mongo      <info>   [BASE] Forced (MONGO_BASEBACKUP_FORCE=1)")
         return take_mongo_basebackup_into_cycle(
             conn_state=conn_state,
             cycle_id=cycle_id,
@@ -143,9 +145,9 @@ def maybe_take_mongo_basebackup(*, cfg, conn_state, cycle_id: str, cycle_tmp: st
             last_n = int(get_metadata(conn_state, "mongo_last_basebackup_cycle:n") or "0")
             last_chain = get_metadata(conn_state, "mongo_last_basebackup_cycle:chain")
             every_n = int(getattr(cfg, "mongo_basebackup_every_n_cycles", 0) or 0)
-            print(f"[MONGO][BASE] Skipped (not due yet): cycle_num={cur_n} last_base_n={last_n} last_chain={last_chain} cur_chain={chain_version} every_n={every_n}")
+            print(f"mongo      <info>   [BASE] Skipped (not due yet): cycle_num={cur_n} last_base_n={last_n} last_chain={last_chain} cur_chain={chain_version} every_n={every_n}")
         except Exception:
-            print("[MONGO][BASE] Skipped (not due yet)")
+            print("mongo      <info>   [BASE] Skipped (not due yet)")
         return None
 
     return take_mongo_basebackup_into_cycle(

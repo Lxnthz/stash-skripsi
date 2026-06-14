@@ -22,13 +22,13 @@ from lib.runner import run_cycle
 def main() -> int:
     try:
         if os.environ.get("BACKUP_PAUSED", "0") in {"1", "true", "TRUE", "yes", "YES"}:
-            print("[INFO] BACKUP_PAUSED=1; skipping backup cycle.")
+            print("main       <info>   BACKUP_PAUSED=1; skipping backup cycle.")
             return 0
         cfg = BackupConfig()
         run_cycle(cfg)
         return 0
     except Exception as e:
-        print(f"[ERROR] Backup cycle failed: {e}")
+        print(f"main       <error>  Backup cycle failed: {e}")
         return 2
 
 

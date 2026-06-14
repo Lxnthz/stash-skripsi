@@ -61,11 +61,11 @@ def _extract_oplog_delta_via_mongosh(
     out_path: str,
 ) -> str | None:
     started = time.perf_counter()
-    print(f"[MONGO] Falling back to docker+mongosh (container={docker_container})")
+    print(f"mongo      <info>   Falling back to docker+mongosh (container={docker_container})")
 
     docker_path = shutil.which("docker")
     if not docker_path:
-        print("[MONGO] docker not found on PATH, cannot extract oplog")
+        print("mongo      <info>   docker not found on PATH, cannot extract oplog")
         return None
 
     # Read last stored ts from state DB.
@@ -82,9 +82,9 @@ def _extract_oplog_delta_via_mongosh(
             i_val = 0
 
     if last_ts_raw:
-        print(f"[MONGO] Last stored ts: {last_ts_raw}")
+        print(f"mongo      <info>   Last stored ts: {last_ts_raw}")
     else:
-        print("[MONGO] Last stored ts: <none> (starting from 0:0)")
+        print("mongo      <info>   Last stored ts: <none> (starting from 0:0)")
 
     # Connect *inside* the container via localhost.
     mongo_uri = build_default_mongo_uri(
@@ -123,7 +123,7 @@ def _extract_oplog_delta_via_mongosh(
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     except Exception as e:
-        print(f"[MONGO] docker exec failed: {e} (skipping Mongo for this cycle)")
+        print(f"mongo      <info>   docker exec failed: {e} (skipping Mongo for this cycle)")
         return None
 
     try:
@@ -166,7 +166,7 @@ def _extract_oplog_delta_via_mongosh(
                 os.remove(tmp_path)
         except Exception:
             pass
-        print(f"[MONGO] Oplog extraction failed: {e} (skipping Mongo for this cycle)")
+        print(f"mongo      <info>   Oplog extraction failed: {e} (skipping Mongo for this cycle)")
         return None
 
     # Update stored ts only if we actually wrote docs.
@@ -176,7 +176,7 @@ def _extract_oplog_delta_via_mongosh(
             t_str, i_str, n_str = latest_ts_raw.split(":")
             if int(n_str) > 0:
                 set_metadata(conn_state, "mongo_last_ts", f"{int(t_str)}:{int(i_str)}")
-                print(f"[MONGO] Updated last ts -> {int(t_str)}:{int(i_str)}")
+                print(f"mongo      <info>   Updated last ts -> {int(t_str)}:{int(i_str)}")
         except Exception:
             pass
 
@@ -197,7 +197,7 @@ def extract_oplog_delta(*, conn_state, mongo_client, out_path: str) -> str | Non
     # Artifact-level compression to `oplog_delta.json.z` is handled by the cycle runner
     # (see utilities/backup/lib/runner.py) when `MONGO_COMPRESS=1` (default).
     started = time.perf_counter()
-    print("[MONGO] Starting oplog extraction")
+    print("mongo      <info>   Starting oplog extraction")
     if MongoClient is None or mongo_client is None:
         docker_container = os.environ.get("MONGO_DOCKER_CONTAINER", "mongodb_live")
         user = os.environ.get("MONGO_USER", "mongodb")
@@ -212,7 +212,7 @@ def extract_oplog_delta(*, conn_state, mongo_client, out_path: str) -> str | Non
             out_path=out_path,
         )
     if BsonTimestamp is None or bson_dumps is None:
-        print("[MONGO] bson helpers not available, skipping oplog extraction")
+        print("mongo      <info>   bson helpers not available, skipping oplog extraction")
         return None
 
     local = mongo_client["local"]
@@ -229,9 +229,9 @@ def extract_oplog_delta(*, conn_state, mongo_client, out_path: str) -> str | Non
         last_ts = BsonTimestamp(0, 0)
 
     if last_ts_raw:
-        print(f"[MONGO] Last stored ts: {last_ts_raw}")
+        print(f"mongo      <info>   Last stored ts: {last_ts_raw}")
     else:
-        print("[MONGO] Last stored ts: <none> (starting from 0:0)")
+        print("mongo      <info>   Last stored ts: <none> (starting from 0:0)")
 
     tmp_path = out_path + ".tmp"
     written = 0
@@ -258,7 +258,7 @@ def extract_oplog_delta(*, conn_state, mongo_client, out_path: str) -> str | Non
                 os.remove(tmp_path)
         except Exception:
             pass
-        print(f"[MONGO] Oplog extraction failed: {e} (skipping Mongo for this cycle)")
+        print(f"mongo      <info>   Oplog extraction failed: {e} (skipping Mongo for this cycle)")
         return None
 
     try:
@@ -268,7 +268,7 @@ def extract_oplog_delta(*, conn_state, mongo_client, out_path: str) -> str | Non
 
     if latest_ts is not None and written > 0:
         set_metadata(conn_state, "mongo_last_ts", f"{latest_ts.time}:{latest_ts.inc}")
-        print(f"[MONGO] Updated last ts -> {latest_ts.time}:{latest_ts.inc}")
+        print(f"mongo      <info>   Updated last ts -> {latest_ts.time}:{latest_ts.inc}")
     elapsed = time.perf_counter() - started
     print(
         f"[MONGO] Oplog summary: entries={written}, out={out_path} ({out_size} bytes), elapsed={elapsed:.2f}s"

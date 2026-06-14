@@ -74,7 +74,7 @@ while [[ $# -gt 0 ]]; do
             sed -n '/^# Usage:/,/^# =/p' "$0" | sed 's/^# \?//'
             exit 0
             ;;
-        *) echo "[FAIL] Unknown option: $1" >&2; exit 1 ;;
+        *) echo "<error> Unknown option: $1" >&2; exit 1 ;;
     esac
 done
 

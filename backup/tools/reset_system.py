@@ -112,7 +112,7 @@ def main() -> int:
         return 2
 
     if os.geteuid() != 0:
-        print("[FAIL] This reset requires root (bind-mount dirs are root/uid-owned by Docker).")
+        print("<error> This reset requires root (bind-mount dirs are root/uid-owned by Docker).")
         print("Run:")
         print("  sudo python3 utilities/backup/tools/reset_system.py --yes")
         return 2
@@ -133,7 +133,7 @@ def main() -> int:
             for name in args.containers:
                 _run([docker, "rm", "-f", name])
         else:
-            print("[WARN] docker not found; skipping container stop")
+            print("<warn> docker not found; skipping container stop")
 
     # 2) Delete DB and data directories
     _rm_rf(DEFAULT_PATHS["pg_data"])
@@ -185,7 +185,7 @@ def main() -> int:
     if args.prepare_incoming:
         _ensure_dir(args.recovery_incoming, mode=0o775, chown=(owner_uid, owner_gid))
 
-    print("[OK] Reset complete")
+    print("<good> Reset complete")
     print(f"- Postgres: wiped + recreated {DEFAULT_PATHS['pg_data']} and {DEFAULT_PATHS['pg_wal_archive']}")
     print(f"- Mongo: wiped + recreated {DEFAULT_PATHS['mongo_data']}")
     print(f"- Unstructured: wiped contents under {DEFAULT_PATHS['unstructured']}")

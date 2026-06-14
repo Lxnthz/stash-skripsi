@@ -59,6 +59,7 @@ class BackupConfig:
 
     # Container names (used for docker exec fallbacks / base backups)
     pg_docker_container: str = os.environ.get("PG_DOCKER_CONTAINER", "postgres_live")
+    pg_compress_level: int = int(os.environ.get("PG_COMPRESS_LEVEL", "10"))
     mongo_docker_container: str = os.environ.get("MONGO_DOCKER_CONTAINER", "mongodb_live")
 
     # Fixtures: seed representative office/PDF files into unstructured_dir so PFC covers them.
@@ -72,7 +73,7 @@ class BackupConfig:
     # PFC delta compression (artifact-level) for transfer
     # Uses zlib (stdlib) to avoid extra dependencies.
     pfc_compress: bool = os.environ.get("PFC_COMPRESS", "1") == "1"
-    pfc_compress_level: int = int(os.environ.get("PFC_COMPRESS_LEVEL", "6"))
+    pfc_compress_level: int = int(os.environ.get("PFC_COMPRESS_LEVEL", "10"))
 
     # Mongo connection defaults (override via env)
     mongo_host: str = os.environ.get("MONGO_HOST", "127.0.0.1")
@@ -87,7 +88,7 @@ class BackupConfig:
 
     # Mongo oplog delta compression (artifact-level) for transfer
     mongo_compress: bool = os.environ.get("MONGO_COMPRESS", "1") == "1"
-    mongo_compress_level: int = int(os.environ.get("MONGO_COMPRESS_LEVEL", "6"))
+    mongo_compress_level: int = int(os.environ.get("MONGO_COMPRESS_LEVEL", "10"))
 
     # If pymongo isn't available, we can still extract oplog by shelling out to the MongoDB
     # container (default name matches utilities/mongodb/mongodb-manifest.yml).

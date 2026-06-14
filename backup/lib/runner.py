@@ -1,5 +1,6 @@
 import os
 import shutil
+import subprocess
 import time
 from datetime import datetime
 
@@ -17,7 +18,6 @@ from .mongo_basebackup import maybe_take_mongo_basebackup
 from .pfc import stage_pfc_deltas
 from .manifest import build_manifest, write_checksums_file
 from .retention import enforce_retention, dir_size_bytes
-from .io_utils import zlib_compress_file
 from .fixtures import seed_fixtures
 from .verify import verify_cycle
 from .transfer import rsync_to_all_targets
@@ -82,7 +82,11 @@ def _tag_good() -> str:
 
 
 def _tag_bad() -> str:
-    return _c("<bad>", "31")
+    return _c("<error>", "31")
+
+
+def _tag_warn() -> str:
+    return _c("<warn>", "33")
 
 
 def _tag_info() -> str:
@@ -96,7 +100,9 @@ def _log(scope: str, tag: str, msg: str) -> None:
     clean_tag = ansi_escape.sub('', tag)
     
     # ensure tidy formatting
-    term_line = f"{scope:<10} {tag:<8} {msg}"
+    # pad clean_tag to 8 chars then replace in tag to keep color
+    colored_tag = tag.replace(clean_tag, f"{clean_tag:<8}") if clean_tag in tag else tag
+    term_line = f"{scope:<10} {colored_tag} {msg}"
     print(term_line)
     
     try:
@@ -212,7 +218,7 @@ def run_cycle(cfg: BackupConfig) -> str:
 
     os.makedirs(os.path.join(cycle_tmp, "pg"), exist_ok=True)
     os.makedirs(os.path.join(cycle_tmp, "mongo"), exist_ok=True)
-    os.makedirs(os.path.join(cycle_tmp, "pfc"), exist_ok=True)
+    os.makedirs(os.path.join(cycle_tmp, "unstructured", "pfc"), exist_ok=True)
 
     # Monotonic cycle counter (used for basebackup scheduling)
     try:
@@ -311,10 +317,12 @@ def run_cycle(cfg: BackupConfig) -> str:
             os.makedirs(base_out, exist_ok=True)
             tar_path = os.path.join(base_out, "base.tar.gz")
             try:
-                subprocess.run(
+                res = subprocess.run(
                     ["tar", "-czf", tar_path, "-C", cfg.unstructured_dir, "."],
-                    check=True,
+                    check=False,
                 )
+                if res.returncode not in (0, 1):
+                    raise RuntimeError(f"tar returned non-zero exit status {res.returncode}")
                 b_size = os.path.getsize(tar_path)
                 unstructured_base_meta = {
                     "artifact": os.path.relpath(tar_path, cycle_tmp),
@@ -323,7 +331,10 @@ def run_cycle(cfg: BackupConfig) -> str:
                 }
                 set_metadata(conn_state, "unstructured_last_basebackup_cycle:chain", chain_version)
                 telemetry.record_size("unstructured_basebackup_stored_bytes", b_size)
-                _log("pfc", _tag_good(), f"basebackup done bytes={_fmt_bytes(b_size)} elapsed={_fmt_elapsed(time.perf_counter() - t0)}")
+                telemetry.record_size("unstr_base_size", b_size)
+                elapsed = time.perf_counter() - t0
+                telemetry.record_timing("unstr_base_s", elapsed)
+                _log("pfc", _tag_good(), f"basebackup done bytes={_fmt_bytes(b_size)} elapsed={_fmt_elapsed(elapsed)}")
             except Exception as e:
                 _log("pfc", _tag_bad(), f"basebackup failed: {e}")
 
@@ -334,10 +345,11 @@ def run_cycle(cfg: BackupConfig) -> str:
             pg_wal_archive=cfg.pg_wal_archive,
             out_dir=os.path.join(cycle_tmp, "pg"),
             tzinfo=tz,
+            compress_level=cfg.pg_compress_level,
         )
         telemetry.record_timing("pg_wal_extract_s", time.perf_counter() - t0)
-        telemetry.record_size("pg_wal_raw_bytes", pg_stats.get("copied_bytes", 0))
-        telemetry.record_size("pg_wal_stored_bytes", pg_stats.get("copied_bytes", 0))
+        telemetry.record_size("pg_wal_raw_bytes", pg_stats.get("raw_bytes", 0))
+        telemetry.record_size("pg_wal_stored_bytes", pg_stats.get("stored_bytes", 0))
         telemetry.record_size("wal_file_count", pg_stats.get("copied_files", 0))
         if pg_stats.get("copied_files", 0) == 0:
             _log("pg", _tag_info(), "no new WAL files")
@@ -354,9 +366,10 @@ def run_cycle(cfg: BackupConfig) -> str:
             mongo_ts_str = get_metadata(conn_state, "mongo_last_ts")
 
             if cfg.mongo_compress:
-                comp_path = oplog_path + ".z"
+                comp_path = oplog_path + ".zst"
                 comp_started = time.perf_counter()
-                meta = zlib_compress_file(
+                from .io_utils import zstd_compress_file
+                meta = zstd_compress_file(
                     oplog_path,
                     comp_path,
                     level=cfg.mongo_compress_level,
@@ -390,7 +403,7 @@ def run_cycle(cfg: BackupConfig) -> str:
                 mongo_delta_artifact = os.path.relpath(comp_path, cycle_tmp)
                 mongo_delta_meta = {
                     "artifact": mongo_delta_artifact,
-                    "compression": "zlib",
+                    "compression": "zstd",
                     "compression_level": int(cfg.mongo_compress_level),
                     "raw_sha256": meta.get("raw_sha256"),
                     "raw_bytes": int(meta.get("bytes_in", 0)),
@@ -428,7 +441,7 @@ def run_cycle(cfg: BackupConfig) -> str:
         pfc_stats = stage_pfc_deltas(
             conn_state=conn_state,
             unstructured_dir=cfg.unstructured_dir,
-            out_dir=os.path.join(cycle_tmp, "pfc"),
+            out_dir=os.path.join(cycle_tmp, "unstructured", "pfc"),
             chunk_size=cfg.chunk_size,
             compress=cfg.pfc_compress,
             compress_level=cfg.pfc_compress_level,
@@ -455,6 +468,8 @@ def run_cycle(cfg: BackupConfig) -> str:
                 "compression": pfc_stats.get("compression"),
                 "compression_level": pfc_stats.get("compression_level"),
                 "deltas": pfc_stats.get("staged_entries", []),
+                "scanned_sizes": pfc_stats.get("scanned_sizes", {}),
+                "deleted_files": pfc_stats.get("deleted_files", []),
             },
             "chain_version": chain_version,
         }
@@ -525,6 +540,12 @@ def run_cycle(cfg: BackupConfig) -> str:
         telemetry.record_timing("retention_s", elapsed_retention)
         _log("main", _tag_info(), f"retention elapsed={_fmt_elapsed(elapsed_retention)}")
 
+        # Calculate final local dir size before transfer potentially deletes it
+        try:
+            out_size = dir_size_bytes(cycle_out)
+        except Exception:
+            out_size = 0
+
         # 7) Feature 3: Transfer finalized cycle to ALL configured destinations.
         #    Feature 4: dest_name preserves chain version so the backup VM's
         #    incoming/ directory mirrors the same chain-vN/<cycle_id> layout:
@@ -560,11 +581,35 @@ def run_cycle(cfg: BackupConfig) -> str:
             else:
                 _log("transfer", _tag_bad(), "TRANSFER_ENABLE=1 but no targets configured (RECOVERY_RSYNC_TARGETS is empty)")
 
-        # Summary — record cycle total stored size, then finalize telemetry
-        try:
-            out_size = dir_size_bytes(cycle_out)
-        except Exception:
-            out_size = 0
+        # Summary — finalize telemetry
+
+        pg_raw = pg_stats.get('copied_bytes', 0) + (pg_base_meta.get('raw_bytes', 0) if pg_base_meta else 0)
+        pg_comp = pg_stats.get('copied_bytes', 0) + (pg_base_meta.get('stored_bytes', 0) if pg_base_meta else 0)
+
+        mongo_delta_raw = mongo_delta_meta.get("raw_bytes", 0) if mongo_delta_meta else 0
+        if not mongo_delta_raw and mongo_delta_meta and mongo_delta_meta.get("compression") == "none":
+            try:
+                mongo_delta_raw = os.path.getsize(os.path.join(cycle_tmp, mongo_delta_meta["artifact"]))
+            except Exception:
+                mongo_delta_raw = 0
+        mongo_delta_comp = mongo_delta_meta.get("stored_bytes", mongo_delta_raw) if mongo_delta_meta else 0
+
+        mongo_raw = mongo_delta_raw + (mongo_base_meta.get('raw_bytes', 0) if mongo_base_meta else 0)
+        mongo_comp = mongo_delta_comp + (mongo_base_meta.get('stored_bytes', 0) if mongo_base_meta else 0)
+
+        unstr_base_s_bytes = unstructured_base_meta.get("stored_bytes", 0) if unstructured_base_meta else 0
+        unstr_raw = pfc_stats.get("bytes_staged_raw", 0) + unstr_base_s_bytes
+        unstr_comp = pfc_stats.get("bytes_staged", 0) + unstr_base_s_bytes
+
+        telemetry.record_size("pg_raw_size", pg_raw)
+        telemetry.record_size("pg_compressed_size", pg_comp)
+        telemetry.record_size("mongo_raw_size", mongo_raw)
+        telemetry.record_size("mongo_compressed_size", mongo_comp)
+        telemetry.record_size("unstr_raw_size", unstr_raw)
+        telemetry.record_size("unstr_compressed_size", unstr_comp)
+        
+        telemetry.record_size("cycle_raw_total_size", pg_raw + mongo_raw + unstr_raw)
+        telemetry.record_size("cycle_final_transfered_size", out_size)
         telemetry.record_size("cycle_total_stored_bytes", out_size)
 
         _log(

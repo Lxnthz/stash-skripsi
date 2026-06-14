@@ -228,10 +228,10 @@ def rsync_to_all_targets(
                 ssh_key=ssh_key,
             )
             results.append(dest)
-            print(f"[TRANSFER] OK: {target!r} -> {dest}")
+            print(f"transfer   <good>   OK: {target!r} -> {dest}")
         except Exception as exc:
             errors.append(f"{target!r}: {exc}")
-            print(f"[TRANSFER] FAIL: {target!r}: {exc}")
+            print(f"transfer   <error>  FAIL: {target!r}: {exc}")
 
     if errors:
         raise RuntimeError(

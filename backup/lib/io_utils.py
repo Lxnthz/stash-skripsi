@@ -26,41 +26,35 @@ def compute_sha256(path: str) -> str:
     return h.hexdigest()
 
 
-def zlib_compress_file(
+def zstd_compress_file(
     src: str,
     dst: str,
     *,
-    level: int = 6,
+    level: int = 5,
     bufsize: int = 1024 * 1024,
     compute_raw_sha256: bool = False,
 ):
+    import zstandard as zstd
     os.makedirs(os.path.dirname(dst), exist_ok=True)
-    compressor = zlib.compressobj(level)
+    cctx = zstd.ZstdCompressor(level=level)
     raw_hasher = hashlib.sha256() if compute_raw_sha256 else None
 
     bytes_in = 0
-    bytes_out = 0
     tmp = dst + ".tmp"
 
     with open(src, "rb") as fr, open(tmp, "wb") as fw:
-        while True:
-            chunk = fr.read(bufsize)
-            if not chunk:
-                break
-            bytes_in += len(chunk)
-            if raw_hasher is not None:
-                raw_hasher.update(chunk)
-            out = compressor.compress(chunk)
-            if out:
-                fw.write(out)
-                bytes_out += len(out)
-
-        tail = compressor.flush()
-        if tail:
-            fw.write(tail)
-            bytes_out += len(tail)
+        with cctx.stream_writer(fw) as compressor:
+            while True:
+                chunk = fr.read(bufsize)
+                if not chunk:
+                    break
+                bytes_in += len(chunk)
+                if raw_hasher is not None:
+                    raw_hasher.update(chunk)
+                compressor.write(chunk)
 
     os.replace(tmp, dst)
+    bytes_out = os.path.getsize(dst)
     return {
         "bytes_in": bytes_in,
         "bytes_out": bytes_out,
@@ -68,4 +62,4 @@ def zlib_compress_file(
     }
 
 
-__all__ = ["copy_file_stream", "compute_sha256", "zlib_compress_file"]
+__all__ = ["copy_file_stream", "compute_sha256", "zstd_compress_file"]

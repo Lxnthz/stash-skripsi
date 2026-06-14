@@ -8,7 +8,7 @@ from .io_utils import compute_sha256
 
 def build_manifest(*, root_dir: str, timestamp: datetime, pg_last_lsn, mongo_last_ts, extras: dict | None = None) -> str:
     started = time.perf_counter()
-    print("[MANIFEST] Building manifest")
+    print("manifest   <info>   Building manifest")
     manifest = {
         "cycle_timestamp": timestamp.isoformat(),
         "pg_last_lsn": str(pg_last_lsn) if pg_last_lsn is not None else None,
@@ -36,9 +36,9 @@ def build_manifest(*, root_dir: str, timestamp: datetime, pg_last_lsn, mongo_las
     manifest_path = os.path.join(root_dir, "manifest.json")
     with open(manifest_path, "w", encoding="utf-8") as mf:
         json.dump(manifest, mf, indent=2)
-    print(f"[MANIFEST] Wrote {manifest_path}")
+    print(f"manifest   <info>   Wrote {manifest_path}")
     elapsed = time.perf_counter() - started
-    print(f"[MANIFEST] Manifest summary: files_hashed={files_count}, bytes_hashed={bytes_count}, elapsed={elapsed:.2f}s")
+    print(f"manifest   <info>   Manifest summary: files_hashed={files_count}, bytes_hashed={bytes_count}, elapsed={elapsed:.2f}s")
     return manifest_path
 
 

@@ -243,7 +243,7 @@ def main() -> int:
     docker_rows = iter_docker_stats()
     append_rows(args.out, host, docker_rows)
 
-    print(f"[OK] Wrote resource usage to {args.out} ({len(docker_rows)} docker rows)")
+    print(f"<good> Wrote resource usage to {args.out} ({len(docker_rows)} docker rows)")
     return 0
 
 

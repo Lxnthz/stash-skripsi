@@ -90,6 +90,17 @@ BACKUP_TELEMETRY_HEADER = [
     # counts
     "wal_file_count",
     "pfc_chunk_count",
+    # additional metrics
+    "pg_raw_size",
+    "pg_compressed_size",
+    "mongo_raw_size",
+    "mongo_compressed_size",
+    "unstr_raw_size",
+    "unstr_compressed_size",
+    "cycle_raw_total_size",
+    "cycle_final_transfered_size",
+    "unstr_base_s",
+    "unstr_base_size",
 ]
 
 PG_EVENTS_HEADER = [
@@ -162,7 +173,7 @@ class BackupTelemetry:
         self.cycle_id = cycle_id
         self.chain_version = chain_version
         self._timings = {k: 0.0 for k in BACKUP_TELEMETRY_HEADER if k.endswith("_s") and k != "timestamp"}
-        self._sizes = {k: 0 for k in BACKUP_TELEMETRY_HEADER if k.endswith("_bytes") or k.endswith("_count")}
+        self._sizes = {k: 0 for k in BACKUP_TELEMETRY_HEADER if k.endswith("_bytes") or k.endswith("_count") or k.endswith("_size")}
 
     def record_timing(self, key: str, elapsed_s: float) -> None:
         """Record a phase duration. key must be one of the *_s columns."""
@@ -174,7 +185,7 @@ class BackupTelemetry:
         self.record_timing(key, elapsed_s)
 
     def record_size(self, key: str, value: int) -> None:
-        """Record a byte or count metric. key must be one of the *_bytes or *_count columns."""
+        """Record a byte or count metric. key must be one of the *_bytes, *_count, or *_size columns."""
         if key in self._sizes:
             self._sizes[key] = int(value)
 
@@ -217,6 +228,17 @@ class BackupTelemetry:
             # counts
             self._sizes.get("wal_file_count", 0),
             self._sizes.get("pfc_chunk_count", 0),
+            # additional metrics
+            self._sizes.get("pg_raw_size", 0),
+            self._sizes.get("pg_compressed_size", 0),
+            self._sizes.get("mongo_raw_size", 0),
+            self._sizes.get("mongo_compressed_size", 0),
+            self._sizes.get("unstr_raw_size", 0),
+            self._sizes.get("unstr_compressed_size", 0),
+            self._sizes.get("cycle_raw_total_size", 0),
+            self._sizes.get("cycle_final_transfered_size", 0),
+            self._timings.get("unstr_base_s", 0.0),
+            self._sizes.get("unstr_base_size", 0),
         ]
         _append_row(self.out_csv, BACKUP_TELEMETRY_HEADER, row)
 

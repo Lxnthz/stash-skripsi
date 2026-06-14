@@ -132,9 +132,12 @@ BEGIN
             LIMIT num_deletes
         );
         DELETE FROM orders
-        WHERE status = 'pending'
-        ORDER BY created_at
-        LIMIT num_deletes;
+        WHERE id IN (
+            SELECT id FROM orders
+            WHERE status = 'pending'
+            ORDER BY created_at
+            LIMIT num_deletes
+        );
     END IF;
 
     -- ── DELETE: remove a small number of inactive customers ──────────────

@@ -52,9 +52,10 @@ def harvest_wals(
     out_dir: str,
     last_cycle_key: str = "last_cycle_ts",
     tzinfo=None,
+    compress_level: int = 5,
 ):
     started = time.perf_counter()
-    print("[PG] Starting WAL harvest")
+    print("pg         <info>   Starting WAL harvest")
 
     last_cycle_ts = get_metadata(conn_state, last_cycle_key)
     try:
@@ -72,19 +73,20 @@ def harvest_wals(
         except Exception:
             last_cycle_iso = None
     if last_cycle_iso:
-        print(f"[PG] Last cycle ts: {last_cycle_ts} ({last_cycle_iso})")
+        print(f"pg         <info>   Last cycle ts: {last_cycle_ts} ({last_cycle_iso})")
     else:
-        print(f"[PG] Last cycle ts: {last_cycle_ts}")
-    print(f"[PG] WAL archive: {pg_wal_archive}")
+        print(f"pg         <info>   Last cycle ts: {last_cycle_ts}")
+    print(f"pg         <info>   WAL archive: {pg_wal_archive}")
 
     last_wal_fname = (get_metadata(conn_state, "pg_last_wal_fname") or "").strip().upper()
     if last_wal_fname:
-        print(f"[PG] Last WAL fname: {last_wal_fname}")
+        print(f"pg         <info>   Last WAL fname: {last_wal_fname}")
     else:
-        print("[PG] Last WAL fname: <none>")
+        print("pg         <info>   Last WAL fname: <none>")
 
     copied = []
-    copied_bytes = 0
+    stored_bytes = 0
+    raw_bytes = 0
     skipped = 0
     padded_count = 0
     padded_bytes = 0
@@ -95,7 +97,7 @@ def harvest_wals(
             if not os.path.isfile(src):
                 # Basebackup temp directories (or other non-files) can appear here.
                 # Never treat them as WAL artifacts.
-                print(f"[PG] Skipping non-file in WAL archive: {src}")
+                print(f"pg         <info>   Skipping non-file in WAL archive: {src}")
                 continue
             try:
                 mtime = int(os.path.getmtime(src))
@@ -104,54 +106,79 @@ def harvest_wals(
             upper = str(fname).upper()
             # For WAL segments, prefer name-based incremental selection.
             if _is_wal_segment(upper) and (not last_wal_fname or upper > last_wal_fname):
-                dst = os.path.join(out_dir, fname)
+                dst = os.path.join(out_dir, fname + ".zst")
                 try:
                     size = int(os.path.getsize(src))
                 except Exception:
                     size = 0
-                print(f"[PG] Copying WAL {src} -> {dst} ({size} bytes)")
-                copy_file_stream(src, dst)
+                print(f"pg         <info>   Compressing WAL {src} -> {dst} (raw={size} bytes)")
 
-                # --- Feature 1: Pad incomplete WAL to full 16 MiB ---
-                if size < _WAL_SEGMENT_BYTES:
-                    try:
-                        added = _pad_wal_to_full(dst)
-                        print(
-                            f"[PG] Padded WAL {fname}: {size} -> {size + added} bytes "
-                            f"(added {added} zero bytes to reach 16 MiB)"
-                        )
-                        padded_count += 1
-                        padded_bytes += added
-                        # Record the padded size for accounting
-                        size = _WAL_SEGMENT_BYTES
-                    except Exception as pad_err:
-                        print(f"[PG] WARNING: could not pad WAL {fname}: {pad_err}")
-                elif size > _WAL_SEGMENT_BYTES:
-                    print(
-                        f"[PG] WARNING: WAL {fname} is {size} bytes (>{_WAL_SEGMENT_BYTES}); "
-                        "not a standard 16 MiB segment — copied as-is"
-                    )
+                import zstandard as zstd
+                cctx = zstd.ZstdCompressor(level=compress_level)
+                
+                with open(src, "rb") as fr, open(dst, "wb") as fw:
+                    with cctx.stream_writer(fw) as compressor:
+                        copied_raw = 0
+                        while True:
+                            chunk = fr.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            compressor.write(chunk)
+                            copied_raw += len(chunk)
+
+                        if size < _WAL_SEGMENT_BYTES:
+                            added = _WAL_SEGMENT_BYTES - copied_raw
+                            if added > 0:
+                                print(
+                                    f"[PG] Padded WAL {fname}: {copied_raw} -> {_WAL_SEGMENT_BYTES} bytes "
+                                    f"(added {added} zero bytes to reach 16 MiB)"
+                                )
+                                padded_count += 1
+                                padded_bytes += added
+                                remaining = added
+                                zero_chunk = b"\x00" * min(1024 * 1024, remaining)
+                                while remaining > 0:
+                                    chunk = zero_chunk[:remaining]
+                                    compressor.write(chunk)
+                                    remaining -= len(chunk)
+                        elif size > _WAL_SEGMENT_BYTES:
+                            print(
+                                f"[PG] WARNING: WAL {fname} is {size} bytes (>{_WAL_SEGMENT_BYTES}); "
+                                "not a standard 16 MiB segment — compressed as-is"
+                            )
 
                 copied.append(dst)
-                copied_bytes += size
+                stored_bytes += os.path.getsize(dst)
+                raw_bytes += copied_raw + added if size < _WAL_SEGMENT_BYTES else size
                 newest_segment_copied = upper
             elif mtime > last_cycle_ts:
                 # Non-segment artifacts (e.g., .backup history) are still copied by mtime.
-                dst = os.path.join(out_dir, fname)
+                dst = os.path.join(out_dir, fname + ".zst")
                 try:
                     size = int(os.path.getsize(src))
                 except Exception:
                     size = 0
-                print(f"[PG] Copying WAL {src} -> {dst} ({size} bytes)")
-                copy_file_stream(src, dst)
+                print(f"pg         <info>   Compressing WAL {src} -> {dst} (raw={size} bytes)")
+                
+                import zstandard as zstd
+                cctx = zstd.ZstdCompressor(level=compress_level)
+                with open(src, "rb") as fr, open(dst, "wb") as fw:
+                    with cctx.stream_writer(fw) as compressor:
+                        while True:
+                            chunk = fr.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            compressor.write(chunk)
+
                 copied.append(dst)
-                copied_bytes += size
+                stored_bytes += os.path.getsize(dst)
+                raw_bytes += size
             else:
                 skipped += 1
 
     elapsed = time.perf_counter() - started
     print(
-        f"[PG] WAL summary: copied={len(copied)} files ({copied_bytes} bytes), "
+        f"[PG] WAL summary: copied={len(copied)} files (raw={raw_bytes} bytes, stored={stored_bytes} bytes), "
         f"padded={padded_count} segments (+{padded_bytes} bytes), "
         f"skipped={skipped} older-or-equal, elapsed={elapsed:.2f}s"
     )
@@ -160,7 +187,8 @@ def harvest_wals(
     return {
         "copied_paths": copied,
         "copied_files": len(copied),
-        "copied_bytes": copied_bytes,
+        "raw_bytes": raw_bytes,
+        "stored_bytes": stored_bytes,
         "padded_count": padded_count,
         "padded_bytes": padded_bytes,
         "skipped_files": skipped,

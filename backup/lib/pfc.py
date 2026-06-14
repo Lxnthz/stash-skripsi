@@ -13,16 +13,16 @@ def stage_pfc_deltas(
     out_dir: str,
     chunk_size: int,
     compress: bool = True,
-    compress_level: int = 6,
+    compress_level: int = 5,
 ):
     started = time.perf_counter()
-    print("[PFC] Starting PFC chunk scan")
-    print(f"[PFC] Source dir: {unstructured_dir}")
-    print(f"[PFC] Chunk size: {chunk_size} bytes")
+    print("pfc        <info>   Starting PFC chunk scan")
+    print(f"pfc        <info>   Source dir: {unstructured_dir}")
+    print(f"pfc        <info>   Chunk size: {chunk_size} bytes")
     if compress:
-        print(f"[PFC] Delta compression: zlib level={compress_level}")
+        print(f"pfc        <info>   Delta compression: zstd level={compress_level}")
     else:
-        print("[PFC] Delta compression: disabled")
+        print("pfc        <info>   Delta compression: disabled")
 
     staged_chunks = 0
     staged_bytes_raw = 0
@@ -36,13 +36,19 @@ def stage_pfc_deltas(
 
     first_staged = []
     staged_entries = []
+    scanned_sizes = {}
+    current_files = set()
+    
     cur = conn_state.cursor()
+    cur.execute("SELECT file_path FROM file_state")
+    db_files = set(row[0] for row in cur.fetchall())
 
     for root, _dirs, files in os.walk(unstructured_dir):
         for fname in files:
             files_total += 1
             fpath = os.path.join(root, fname)
             relpath = os.path.relpath(fpath, unstructured_dir)
+            current_files.add(relpath)
             try:
                 mtime = int(os.path.getmtime(fpath))
                 size = int(os.path.getsize(fpath))
@@ -56,6 +62,7 @@ def stage_pfc_deltas(
 
             files_scanned += 1
             total_bytes_read += size
+            scanned_sizes[relpath] = size
 
             chunk_index = 0
             try:
@@ -74,14 +81,16 @@ def stage_pfc_deltas(
                         if not row or row[0] != sha:
                             base_name = f"{relpath.replace(os.sep,'_')}_chunk{chunk_index}.bin"
                             if compress:
-                                dst_name = base_name + ".z"
+                                dst_name = base_name + ".zst"
                             else:
                                 dst_name = base_name
                             dst_path = os.path.join(out_dir, dst_name)
                             os.makedirs(os.path.dirname(dst_path), exist_ok=True)
 
                             if compress:
-                                payload = zlib.compress(chunk, level=compress_level)
+                                import zstandard as zstd
+                                cctx = zstd.ZstdCompressor(level=compress_level)
+                                payload = cctx.compress(chunk)
                             else:
                                 payload = chunk
 
@@ -98,13 +107,13 @@ def stage_pfc_deltas(
 
                             staged_entries.append(
                                 {
-                                    "artifact": f"pfc/{dst_name}",
+                                    "artifact": f"unstructured/pfc/{dst_name}",
                                     "source_file": relpath,
                                     "chunk_index": int(chunk_index),
                                     "raw_bytes": int(len(chunk)),
                                     "stored_bytes": int(len(payload)),
                                     "raw_sha256": sha,
-                                    "compression": "zlib" if compress else "none",
+                                    "compression": "zstd" if compress else "none",
                                     "compression_level": int(compress_level) if compress else None,
                                 }
                             )
@@ -116,7 +125,13 @@ def stage_pfc_deltas(
                 conn_state.commit()
                 set_file_state(conn_state, relpath, mtime, size)
             except Exception as e:
-                print(f"[PFC] Error scanning {fpath}: {e}")
+                print(f"pfc        <error>  Error scanning {fpath}: {e}")
+
+    deleted_files = list(db_files - current_files)
+    for df in deleted_files:
+        cur.execute("DELETE FROM file_state WHERE file_path=?", (df,))
+        cur.execute("DELETE FROM chunk_hashes WHERE file_path=?", (df,))
+    conn_state.commit()
 
     elapsed = time.perf_counter() - started
 
@@ -125,23 +140,24 @@ def stage_pfc_deltas(
         ratio = staged_bytes_compressed / staged_bytes_raw
 
     print(
-        f"[PFC] PFC summary: files_total={files_total}, scanned={files_scanned}, "
-        f"skipped_unchanged={files_skipped_unchanged}, chunks_total={total_chunks}, "
+        f"pfc        <info>   PFC summary: files_total={files_total}, scanned={files_scanned}, "
+        f"deleted={len(deleted_files)}, skipped_unchanged={files_skipped_unchanged}, chunks_total={total_chunks}, "
         f"chunks_staged={staged_chunks} (raw={staged_bytes_raw} bytes, stored={staged_bytes_compressed} bytes), "
         f"bytes_scanned={total_bytes_read}, "
         f"elapsed={elapsed:.2f}s"
     )
     if ratio is not None:
-        print(f"[PFC] Compression ratio (stored/raw): {ratio:.3f}")
+        print(f"pfc        <info>   Compression ratio (stored/raw): {ratio:.3f}")
     if first_staged:
-        print(f"[PFC] Example staged chunks: {', '.join(first_staged)}")
+        print(f"pfc        <info>   Example staged chunks: {', '.join(first_staged)}")
         if staged_chunks > len(first_staged):
-            print(f"[PFC] (and {staged_chunks - len(first_staged)} more chunks)")
+            print(f"pfc        <info>   (and {staged_chunks - len(first_staged)} more chunks)")
 
     return {
         "files_total": files_total,
         "files_scanned": files_scanned,
         "files_skipped_unchanged": files_skipped_unchanged,
+        "files_deleted": len(deleted_files),
         "chunks_total": total_chunks,
         "chunks_staged": staged_chunks,
         "bytes_scanned": total_bytes_read,
@@ -150,6 +166,8 @@ def stage_pfc_deltas(
         "compression": "zlib" if compress else "none",
         "compression_level": int(compress_level) if compress else None,
         "staged_entries": staged_entries,
+        "scanned_sizes": scanned_sizes,
+        "deleted_files": deleted_files,
         "elapsed_s": elapsed,
     }
 

@@ -273,6 +273,14 @@ def _decompress_zlib_file(src: str, dst: str) -> int:
         f.write(raw)
     return len(raw)
 
+def _decompress_zstd_file(src: str, dst: str) -> int:
+    import zstandard as zstd
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    dctx = zstd.ZstdDecompressor()
+    with open(src, "rb") as fr, open(dst, "wb") as fw:
+        dctx.copy_stream(fr, fw)
+    return os.path.getsize(dst)
+
 
 def _apply_chunk(*, out_unstructured_dir: str, rel_file: str, chunk_index: int, chunk_size: int, chunk_bytes: bytes) -> None:
     dst_path = os.path.join(out_unstructured_dir, rel_file)
@@ -344,8 +352,17 @@ def _build_merged_wal_dir(cycle_dirs: list[str], out_pg: str) -> str:
             if not os.path.isfile(sp):
                 # skip basebackup/ subdir etc.
                 continue
-            dp = os.path.join(merged, name)
-            shutil.copy2(sp, dp)
+            
+            if name.endswith(".zst"):
+                out_name = name[:-4]
+                dp = os.path.join(merged, out_name)
+                import zstandard as zstd
+                dctx = zstd.ZstdDecompressor()
+                with open(sp, "rb") as fr, open(dp, "wb") as fw:
+                    dctx.copy_stream(fr, fw)
+            else:
+                dp = os.path.join(merged, name)
+                shutil.copy2(sp, dp)
             total += 1
 
     _log(
@@ -378,6 +395,15 @@ def _pg_restore_container(
 
     os.makedirs(pgdata, exist_ok=True)
 
+    if base_tar_gz.endswith(".zst"):
+        uncompressed_tar = base_tar_gz[:-4]
+        _decompress_zstd_file(base_tar_gz, uncompressed_tar)
+        target_tar = uncompressed_tar
+        tar_flags = "-xf"
+    else:
+        target_tar = base_tar_gz
+        tar_flags = "-xzf"
+
     # Populate PGDATA from base.tar.gz inside a throwaway container.
     _run(
         [
@@ -389,17 +415,23 @@ def _pg_restore_container(
             "-v",
             f"{pgdata}:/var/lib/postgresql/data",
             "-v",
-            f"{os.path.abspath(base_tar_gz)}:/base.tar.gz:ro",
+            f"{os.path.abspath(target_tar)}:/base.tar:ro",
             image,
             "sh",
             "-lc",
             "rm -rf /var/lib/postgresql/data/* "
-            "&& tar -xzf /base.tar.gz -C /var/lib/postgresql/data "
+            f"&& tar {tar_flags} /base.tar -C /var/lib/postgresql/data "
             "&& chown -R postgres:postgres /var/lib/postgresql/data "
             "&& touch /var/lib/postgresql/data/recovery.signal",
         ],
         check=True,
     )
+
+    if target_tar != base_tar_gz and os.path.isfile(target_tar):
+        try:
+            os.remove(target_tar)
+        except Exception:
+            pass
 
     _docker_rm(container)
 
@@ -768,7 +800,13 @@ def restore_cycle(
 
             if compression == "zlib":
                 with open(art_path, "rb") as f:
+                    import zlib
                     chunk_bytes = zlib.decompress(f.read())
+            elif compression == "zstd":
+                with open(art_path, "rb") as f:
+                    import zstandard as zstd
+                    dctx = zstd.ZstdDecompressor()
+                    chunk_bytes = dctx.decompress(f.read())
             else:
                 with open(art_path, "rb") as f:
                     chunk_bytes = f.read()
@@ -796,6 +834,27 @@ def restore_cycle(
             )
             applied += 1
 
+        scanned_sizes = pfc.get("scanned_sizes", {})
+        if scanned_sizes:
+            for rel_file, final_size in scanned_sizes.items():
+                dst_path = os.path.join(out_unstructured, rel_file)
+                if not os.path.exists(dst_path):
+                    os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+                    with open(dst_path, "wb"):
+                        pass
+                with open(dst_path, "r+b") as f:
+                    f.truncate(final_size)
+                    
+        deleted_files = pfc.get("deleted_files", [])
+        if deleted_files:
+            for rel_file in deleted_files:
+                dst_path = os.path.join(out_unstructured, rel_file)
+                if os.path.exists(dst_path):
+                    try:
+                        os.remove(dst_path)
+                    except Exception as e:
+                        _log("[PFC]", f"Warning: Failed to remove deleted file {rel_file}: {e}")
+
     # 3) Feature 2 – Single-Pass WAL Staging.
     # Merge ALL cycles' WAL into one directory so the restore container gets a
     # continuous stream from the start.  This prevents Postgres from forking
@@ -819,9 +878,12 @@ def restore_cycle(
         dst_base = os.path.join(out_pg, "basebackup", cycle_id)
         files_copied, _bytes_copied = _copy_tree(src_base, dst_base)
         pg_basebackup_files_copied += files_copied
-        cand = os.path.join(dst_base, "base.tar.gz")
-        if os.path.isfile(cand):
-            pg_latest_base_tar_gz = cand
+        cand_gz = os.path.join(dst_base, "base.tar.gz")
+        cand_zst = os.path.join(dst_base, "base.tar.zst")
+        if os.path.isfile(cand_zst):
+            pg_latest_base_tar_gz = cand_zst
+        elif os.path.isfile(cand_gz):
+            pg_latest_base_tar_gz = cand_gz
     if pg_basebackup_files_copied:
         _log("[PG]", f"Restored basebackup artifacts: files_copied={pg_basebackup_files_copied} -> {out_pg}/basebackup")
 
@@ -848,6 +910,10 @@ def restore_cycle(
             dst = os.path.join(out_mongo, f"oplog_delta.{cycle_id}.json")
             raw_bytes = _decompress_zlib_file(src, dst)
             _log("[MONGO]", f"Decompressed oplog delta: {src} -> {dst} bytes={raw_bytes}")
+        elif compression == "zstd":
+            dst = os.path.join(out_mongo, f"oplog_delta.{cycle_id}.json")
+            raw_bytes = _decompress_zstd_file(src, dst)
+            _log("[MONGO]", f"Decompressed oplog delta (zstd): {src} -> {dst} bytes={raw_bytes}")
         else:
             dst = os.path.join(out_mongo, os.path.basename(src))
             shutil.copy2(src, dst)
@@ -1225,6 +1291,39 @@ def main() -> int:
         # poisoned chain to expire via retention / cloud 7-day TTL.
         if getattr(args, "bump_chain_version", False):
             _bump_chain_version(args.state_db)
+
+        if args.promote:
+            _log("[PROMOTE]", "Waiting for databases to finish recovery before starting LIVE stack...")
+            if args.pg_restore:
+                _log("[PROMOTE]", "Waiting for Postgres WAL replay to complete...")
+                while True:
+                    try:
+                        res = subprocess.run(
+                            ["docker", "exec", "postgres_live", "psql", "-U", "postgresql", "-d", "postgres", "-tAc", "SELECT pg_is_in_recovery()"],
+                            capture_output=True, text=True
+                        )
+                        if res.stdout.strip() == "f":
+                            break
+                    except Exception:
+                        pass
+                    time.sleep(2)
+                _log("[PROMOTE]", "Postgres recovery complete.")
+            
+            _log("[PROMOTE]", "Stopping temporary restore containers...")
+            if args.pg_restore:
+                _docker_rm("postgres_live")
+            if args.mongo_restore:
+                _docker_rm("mongodb_live")
+            
+            _log("[PROMOTE]", "Bringing up full LIVE stack via docker-compose (including generators)...")
+            compose_cmds = [
+                ["docker", "compose", "-f", "/home/primary/utilities/postgres/postgresql-manifest.yml", "up", "-d", "--force-recreate"],
+                ["docker", "compose", "-f", "/home/primary/utilities/mongodb/mongodb-manifest.yml", "up", "-d", "--force-recreate"],
+                ["docker", "compose", "-f", "/home/primary/utilities/unstructured/docker-compose.unstructured.yml", "up", "-d", "--force-recreate"],
+            ]
+            for cmd in compose_cmds:
+                _run(cmd, check=True)
+            _log("[PROMOTE]", "LIVE stack successfully promoted and fully online!")
 
     except Exception as e:
         _log("[RESTORE]", f"FAIL: {e}")
