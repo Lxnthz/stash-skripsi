@@ -15,7 +15,7 @@ class WorkflowTelemetry:
     cycle_id: str
     raw_size_bytes: Optional[int] = None
     encrypted_size_bytes: Optional[int] = None
-    duration_aes256_b64_sec: Optional[float] = None
+    duration_aes256_sec: Optional[float] = None
     duration_cloud_transfer_sec: Optional[float] = None
     duration_vm1_transfer_sec: Optional[float] = None
     total_workflow_sec: Optional[float] = None
@@ -30,7 +30,7 @@ def write_telemetry(record: WorkflowTelemetry) -> None:
         "cycle_id",
         "raw_size_bytes",
         "encrypted_size_bytes",
-        "duration_aes256_b64_sec",
+        "duration_aes256_sec",
         "duration_cloud_transfer_sec",
         "duration_vm1_transfer_sec",
         "total_workflow_sec"

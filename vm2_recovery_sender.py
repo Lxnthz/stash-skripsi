@@ -47,7 +47,7 @@ from typing import Optional
 _THIS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_THIS_DIR))
 
-from lib.decrypt_aesgcm_b64 import decrypt_b64_aes256gcm_to_file  # noqa: E402
+from lib.decrypt_aesgcm_b64 import decrypt_aes256gcm_to_file  # noqa: E402
 from lib.telemetry import WorkflowTelemetry, write_telemetry  # noqa: E402
 from lib.fsutil import ensure_dir_copy_atomic, ensure_dirs  # noqa: E402
 
@@ -61,7 +61,7 @@ ENV_RCLONE_IMMUTABLE_REMOTE = "VM2_RCLONE_IMMUTABLE_REMOTE"
 
 
 def _log(msg: str) -> None:
-    ts = _dt.datetime.now(tz=_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts = _dt.datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z")
     print(f"[{ts}] {msg}", flush=True)
 
 
@@ -207,18 +207,18 @@ def _restore_from_cloud(
 
     with tempfile.TemporaryDirectory(prefix=f"vm2-cloud-{cycle_id}-") as td:
         td_path = Path(td)
-        b64_leaf = f"{cycle_id}.tar.aes256gcm.b64"
-        remote_b64 = _rclone_join(_rclone_join(rclone_remote, chain_v), b64_leaf)
-        local_b64 = td_path / b64_leaf
+        enc_leaf = f"{cycle_id}.tar.aes256gcm"
+        remote_enc = _rclone_join(_rclone_join(rclone_remote, chain_v), enc_leaf)
+        local_enc = td_path / enc_leaf
         cloud_start = time.time()
-        _rclone_copyto(remote_b64, local_b64)
+        _rclone_copyto(remote_enc, local_enc)
         cloud_time = round(time.time() - cloud_start, 4)
 
         tar_path = td_path / f"{cycle_id}.tar"
         dec_start = time.time()
-        decrypt_b64_aes256gcm_to_file(key=key, in_b64_path=local_b64, out_path=tar_path)
+        decrypt_aes256gcm_to_file(key=key, in_path=local_enc, out_path=tar_path)
         dec_time = round(time.time() - dec_start, 4)
-        enc_size = local_b64.stat().st_size if local_b64.exists() else 0
+        enc_size = local_enc.stat().st_size if local_enc.exists() else 0
         raw_size = tar_path.stat().st_size if tar_path.exists() else 0
         _extract_tar(tar_path, outgoing_root)
 
@@ -248,9 +248,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     p.add_argument(
         "--source",
-        choices=["local", "cloud", "immutable"],
+        choices=["local", "general", "immutable"],
         default="local",
-        help="where to read cycles from: local (encrypted store), cloud (general bucket), immutable (immutable bucket). Default: local",
+        help="where to read cycles from: local (encrypted store), general (general bucket), immutable (immutable bucket). Default: local",
     )
     p.add_argument("--encrypted-root", default=os.environ.get("VM2_ENCRYPTED_ROOT", DEFAULT_ENCRYPTED_ROOT))
     p.add_argument("--outgoing-root", default=os.environ.get("VM2_OUTGOING_ROOT", DEFAULT_OUTGOING_ROOT))
@@ -351,14 +351,14 @@ def main(argv: Optional[list[str]] = None) -> int:
             _log("  ↳ source: local encrypted storage")
             chain_outgoing = outgoing_root / chain_v
             chain_outgoing.mkdir(parents=True, exist_ok=True)
-            local_b64 = encrypted_root / chain_v / f"{cid}.tar.aes256gcm.b64"
+            local_enc = encrypted_root / chain_v / f"{cid}.tar.aes256gcm"
             with tempfile.TemporaryDirectory(prefix=f"vm2-local-{cid}-") as td:
                 tar_path = Path(td) / f"{cid}.tar"
-                _log("  ↳ decrypting AES-256-GCM + Base64 artifact...")
+                _log("  ↳ decrypting AES-256-GCM artifact...")
                 dec_start = time.time()
-                decrypt_b64_aes256gcm_to_file(key=key, in_b64_path=local_b64, out_path=tar_path)
+                decrypt_aes256gcm_to_file(key=key, in_path=local_enc, out_path=tar_path)
                 dec_time = round(time.time() - dec_start, 4)
-                enc_size = local_b64.stat().st_size if local_b64.exists() else 0
+                enc_size = local_enc.stat().st_size if local_enc.exists() else 0
                 raw_size = tar_path.stat().st_size if tar_path.exists() else 0
                 cloud_time = 0.0
                 _log("  ↳ extracting raw tar archive...")
@@ -370,7 +370,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             _verify_cycle_ready(restored)
 
         elif source in ("general", "immutable"):
-            _log(f"  ↳ source: cloud bucket ({source})")
+            _log(f"  ↳ source: general/immutable bucket ({source})")
             _log("  ↳ downloading & decrypting AES-256-GCM + Base64 artifact...")
             _, dec_time, cloud_time, enc_size, raw_size = _restore_from_cloud(
                 key=key,
@@ -389,13 +389,13 @@ def main(argv: Optional[list[str]] = None) -> int:
             vm1_time = round(time.time() - vm1_start, 4)
 
         telemetry = WorkflowTelemetry(
-            timestamp=_dt.datetime.utcnow().isoformat() + "Z",
+            timestamp=_dt.datetime.now().astimezone().isoformat(),
             workflow_type="restore",
             chain_v=chain_v,
             cycle_id=cid,
             raw_size_bytes=raw_size,
             encrypted_size_bytes=enc_size,
-            duration_aes256_b64_sec=dec_time,
+            duration_aes256_sec=dec_time,
             duration_cloud_transfer_sec=cloud_time,
             duration_vm1_transfer_sec=vm1_time,
             total_workflow_sec=round(time.time() - loop_start, 4)

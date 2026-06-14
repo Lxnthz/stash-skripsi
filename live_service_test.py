@@ -55,7 +55,7 @@ if chain_outgoing.exists():
     shutil.rmtree(chain_outgoing)
 
 encrypted_chain = BASE / "encrypted" / CHAIN_V
-cycles = sorted(f for f in encrypted_chain.glob("*.tar.aes256gcm.b64")) if encrypted_chain.is_dir() else []
+cycles = sorted(f for f in encrypted_chain.glob("*.tar.aes256gcm") if not f.name.endswith(".meta.json")) if encrypted_chain.is_dir() else []
 assert cycles, f"No cycles in {encrypted_chain} — run decrypt_and_compare.py first"
 ok(f"encrypted/{CHAIN_V} has {len(cycles)} cycle(s): {[c.name for c in cycles]}")
 

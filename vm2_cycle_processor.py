@@ -13,7 +13,7 @@ A cycle is processed only when:
   - sha256sum -c checksums.sha256 succeeds inside that cycle directory
 
 For each chain-v / cycle_id pair:
-  - Encrypted artifact at:     <encrypted_root>/<chain-v>/<cycle_id>.tar.aes256gcm.b64
+  - Encrypted artifact at:     <encrypted_root>/<chain-v>/<cycle_id>.tar.aes256gcm
   - Metadata at:               <encrypted_root>/<chain-v>/<cycle_id>.tar.aes256gcm.meta.json
   - Idempotency marker:        <encrypted_root>/<chain-v>/<cycle_id>.vm2_done
 After successful processing, the incoming cycle directory is deleted (default) to avoid
@@ -32,7 +32,7 @@ Decrypt verification (Python snippet):
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
     key  = base64.b64decode(os.environ['VM2_AES_KEY_B64'])
-    blob = base64.b64decode(open('CYCLE.tar.aes256gcm.b64','rb').read())
+    blob = open('CYCLE.tar.aes256gcm','rb').read()
     nonce, rest = blob[:12], blob[12:]
     ciphertext, tag = rest[:-16], rest[-16:]
     pt = AESGCM(key).decrypt(nonce, ciphertext + tag, None)
@@ -63,7 +63,7 @@ from typing import Optional
 _THIS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_THIS_DIR))
 
-from lib.aesgcm_b64 import EncryptResult, encrypt_file_to_b64_aes256gcm  # noqa: E402
+from lib.aesgcm_b64 import EncryptResult, encrypt_file_to_aes256gcm  # noqa: E402
 from lib.fsutil import SingleInstanceLock, atomic_write_json, ensure_dir_copy_atomic, ensure_dirs  # noqa: E402
 from lib.telemetry import WorkflowTelemetry, write_telemetry  # noqa: E402
 
@@ -78,18 +78,18 @@ DEFAULT_POLL_SECONDS = 15
 @dataclass(frozen=True)
 class Outputs:
     done_marker: Path
-    encrypted_b64: Path
+    encrypted: Path
     encrypted_meta: Path
     uploaded_general_marker: Path
     uploaded_immutable_marker: Path
 
 
 def _iso_now() -> str:
-    return _dt.datetime.now(tz=_dt.timezone.utc).isoformat()
+    return _dt.datetime.now().astimezone().isoformat()
 
 
 def _log(msg: str) -> None:
-    ts = _dt.datetime.now(tz=_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts = _dt.datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z")
     print(f"[{ts}] {msg}", flush=True)
 
 
@@ -156,7 +156,7 @@ def _compute_outputs(
     enc_chain_dir = encrypted_root / chain_v
     return Outputs(
         done_marker=enc_chain_dir / f"{cycle_id}.vm2_done",
-        encrypted_b64=enc_chain_dir / f"{cycle_id}.tar.aes256gcm.b64",
+        encrypted=enc_chain_dir / f"{cycle_id}.tar.aes256gcm",
         encrypted_meta=enc_chain_dir / f"{cycle_id}.tar.aes256gcm.meta.json",
         uploaded_general_marker=enc_chain_dir / f"{cycle_id}.vm2_uploaded_general",
         uploaded_immutable_marker=enc_chain_dir / f"{cycle_id}.vm2_uploaded_immutable",
@@ -229,19 +229,22 @@ def _write_meta_atomic(
     chain_v: str,
     enc: EncryptResult,
     cycle_timestamp: Optional[str],
+    manifest_summary: Optional[dict] = None,
 ) -> None:
     meta = {
         "alg": "AES-256-GCM",
         "chain_v": chain_v,
         "cycle_id": cycle_id,
         "created_at": _iso_now(),
-        "nonce_b64": base64.b64encode(enc.nonce).decode("ascii"),
-        "tag_b64": base64.b64encode(enc.tag).decode("ascii"),
+        "nonce_hex": enc.nonce.hex(),
+        "tag_hex": enc.tag.hex(),
         "plaintext": "tar",
         "sha256_plaintext_tar": enc.sha256_plaintext_hex,
     }
     if isinstance(cycle_timestamp, str) and cycle_timestamp:
         meta["cycle_timestamp"] = cycle_timestamp
+    if manifest_summary:
+        meta["manifest_summary"] = manifest_summary
     tmp = meta_path.with_name(meta_path.name + ".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2, sort_keys=True)
@@ -251,10 +254,18 @@ def _write_meta_atomic(
     os.replace(tmp, meta_path)
 
 
-def _write_done_marker(done_path: Path, cycle_id: str, chain_v: str, cycle_timestamp: Optional[str]) -> None:
+def _write_done_marker(
+    done_path: Path,
+    cycle_id: str,
+    chain_v: str,
+    cycle_timestamp: Optional[str],
+    manifest_summary: Optional[dict] = None,
+) -> None:
     obj = {"cycle_id": cycle_id, "chain_v": chain_v, "done_at": _iso_now()}
     if isinstance(cycle_timestamp, str) and cycle_timestamp:
         obj["cycle_timestamp"] = cycle_timestamp
+    if manifest_summary:
+        obj["manifest_summary"] = manifest_summary
     atomic_write_json(done_path, obj)
 
 
@@ -285,18 +296,18 @@ def process_one_cycle(
     outputs = _compute_outputs(encrypted_root, chain_v, cycle_id)
 
     # Ensure encrypted chain dir exists.
-    ensure_dirs(outputs.encrypted_b64.parent)
+    ensure_dirs(outputs.encrypted.parent)
 
     if outputs.done_marker.exists():
         # Already processed: retry any pending uploads.
-        if outputs.encrypted_b64.is_file() and outputs.encrypted_meta.is_file():
+        if outputs.encrypted.is_file() and outputs.encrypted_meta.is_file():
             try:
                 _maybe_upload(
                     cmd_template=upload_general_cmd,
                     marker_path=outputs.uploaded_general_marker,
                     cycle_id=cycle_id,
                     chain_v=chain_v,
-                    files=[outputs.encrypted_b64, outputs.encrypted_meta],
+                    files=[outputs.encrypted, outputs.encrypted_meta],
                     label="general",
                 )
                 _maybe_upload(
@@ -304,7 +315,7 @@ def process_one_cycle(
                     marker_path=outputs.uploaded_immutable_marker,
                     cycle_id=cycle_id,
                     chain_v=chain_v,
-                    files=[outputs.encrypted_b64, outputs.encrypted_meta],
+                    files=[outputs.encrypted, outputs.encrypted_meta],
                     label="immutable",
                 )
             except Exception as exc:
@@ -312,7 +323,7 @@ def process_one_cycle(
 
         if delete_incoming_on_success and incoming_cycle.exists():
             if _verify_cycle_ready(incoming_cycle):
-                if outputs.encrypted_b64.is_file() and outputs.encrypted_meta.is_file():
+                if outputs.encrypted.is_file() and outputs.encrypted_meta.is_file():
                     try:
                         _safe_delete_incoming_cycle(incoming_chain_dir, incoming_cycle)
                         _log(f"cleaned incoming cycle {chain_v}/{cycle_id}")
@@ -329,16 +340,43 @@ def process_one_cycle(
     _verify_checksums_in_dir(incoming_cycle)
 
     cycle_timestamp: Optional[str] = None
+    manifest_summary: Optional[dict] = None
     try:
         with open(incoming_cycle / "manifest.json", "r", encoding="utf-8") as f:
-            cycle_timestamp = json.load(f).get("cycle_timestamp")
+            mf = json.load(f)
+        cycle_timestamp = mf.get("cycle_timestamp")
+        # Build a compact summary of the new multi-component manifest format.
+        summary: dict = {}
+        if "chain_version" in mf:
+            summary["chain_version"] = mf["chain_version"]
+        if "pg_last_lsn" in mf:
+            summary["pg_last_lsn"] = mf["pg_last_lsn"]
+        if "mongo_last_ts" in mf:
+            summary["mongo_last_ts"] = mf["mongo_last_ts"]
+        # Record which top-level components are present.
+        components = []
+        for comp in ("pg_basebackup", "mongo_basebackup", "unstructured_basebackup", "mongo", "pfc", "files", "fixtures"):
+            if comp in mf:
+                components.append(comp)
+        if components:
+            summary["components"] = components
+        # Total raw bytes from unstructured scanned_sizes if present.
+        try:
+            scanned = mf.get("pfc", {}).get("scanned_sizes") or mf.get("files", {}).get("scanned_sizes", {})
+            if scanned:
+                summary["unstructured_raw_bytes"] = sum(scanned.values())
+        except Exception:
+            pass
+        if summary:
+            manifest_summary = summary
     except Exception:
         cycle_timestamp = None
+        manifest_summary = None
 
     # 2) Create tar from incoming copy directly.
     tar_tmp: Optional[Path] = None
     ensure_dirs(work_dir / chain_v)
-    if outputs.encrypted_b64.is_file() and outputs.encrypted_meta.is_file():
+    if outputs.encrypted.is_file() and outputs.encrypted_meta.is_file():
         # Reuse existing encrypted outputs (prior partial attempt).
         pass
     else:
@@ -355,12 +393,12 @@ def process_one_cycle(
 
         workflow_start = time.time()
         # 3) Encrypt tar → base64 artifact.
-        _log("  ↳ encrypting with AES-256-GCM + Base64...")
+        _log("  ↳ encrypting with AES-256-GCM...")
         enc_start = time.time()
-        enc = encrypt_file_to_b64_aes256gcm(key=key, plaintext_path=tar_tmp, out_b64_path=outputs.encrypted_b64)
+        enc = encrypt_file_to_aes256gcm(key=key, plaintext_path=tar_tmp, out_path=outputs.encrypted)
         enc_duration = round(time.time() - enc_start, 4)
         raw_size = tar_tmp.stat().st_size if tar_tmp.exists() else 0
-        enc_size = outputs.encrypted_b64.stat().st_size if outputs.encrypted_b64.exists() else 0
+        enc_size = outputs.encrypted.stat().st_size if outputs.encrypted.exists() else 0
         
         _write_meta_atomic(
             meta_path=outputs.encrypted_meta,
@@ -368,6 +406,7 @@ def process_one_cycle(
             chain_v=chain_v,
             enc=enc,
             cycle_timestamp=cycle_timestamp,
+            manifest_summary=manifest_summary,
         )
 
     # 4) Optional cloud uploads (two targets).
@@ -377,7 +416,7 @@ def process_one_cycle(
         marker_path=outputs.uploaded_general_marker,
         cycle_id=cycle_id,
         chain_v=chain_v,
-        files=[outputs.encrypted_b64, outputs.encrypted_meta],
+        files=[outputs.encrypted, outputs.encrypted_meta],
         label="general",
     )
     up_time2 = _maybe_upload(
@@ -385,13 +424,13 @@ def process_one_cycle(
         marker_path=outputs.uploaded_immutable_marker,
         cycle_id=cycle_id,
         chain_v=chain_v,
-        files=[outputs.encrypted_b64, outputs.encrypted_meta],
+        files=[outputs.encrypted, outputs.encrypted_meta],
         label="immutable",
     )
 
     # 5) Write done marker last (idempotency).
     _log("  ↳ finalizing idempotency markers & cleaning up...")
-    _write_done_marker(outputs.done_marker, cycle_id, chain_v, cycle_timestamp)
+    _write_done_marker(outputs.done_marker, cycle_id, chain_v, cycle_timestamp, manifest_summary)
 
     if tar_tmp is not None:
         try:
@@ -409,13 +448,13 @@ def process_one_cycle(
     total_duration = round(time.time() - workflow_start, 4) if 'workflow_start' in locals() else 0.0
     if 'enc_duration' in locals():
         telemetry = WorkflowTelemetry(
-            timestamp=_dt.datetime.utcnow().isoformat() + "Z",
+            timestamp=_dt.datetime.now().astimezone().isoformat(),
             workflow_type="backup",
             chain_v=chain_v,
             cycle_id=cycle_id,
             raw_size_bytes=raw_size,
             encrypted_size_bytes=enc_size,
-            duration_aes256_b64_sec=enc_duration,
+            duration_aes256_sec=enc_duration,
             duration_cloud_transfer_sec=round((up_time1 or 0) + (up_time2 or 0), 4),
             total_workflow_sec=total_duration
         )

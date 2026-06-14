@@ -4,6 +4,7 @@ import argparse
 import os
 import pwd
 import shutil
+import stat
 from pathlib import Path
 
 
@@ -16,12 +17,17 @@ DEFAULT_ENCRYPTED_ROOT = "/home/recovery/local-backup/encrypted"
 
 
 def _rm_rf(path: Path) -> None:
-    if not path.exists():
+    # lstat so we don't follow symlinks
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
         return
-    if path.is_symlink() or path.is_file():
-        path.unlink()
-        return
-    shutil.rmtree(path)
+    mode = st.st_mode
+    if stat.S_ISDIR(mode):
+        shutil.rmtree(path)
+    else:
+        # handles regular files, symlinks, FIFOs, sockets, devices, etc.
+        path.unlink(missing_ok=True)
 
 
 def _rm_contents(dir_path: Path) -> None:

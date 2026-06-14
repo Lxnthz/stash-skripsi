@@ -8,8 +8,8 @@
 #   ┌─────────────────────────────────────────────────────────────────────┐
 #   │  BACKUP WORKER (background subshell)                                │
 #   │  • Scans incoming/<chain-v>/<cycle_id>/ every VM2_POLL_SECONDS      │
-#   │  • Encrypts (AES-256-GCM + Base64) → encrypted/<chain-v>/          │
-#   │  • Copies raw to permanent/<chain-v>/                               │
+#   │  • Encrypts (AES-256-GCM + Base64) → encrypted/<chain-v>/           │
+#   │  • Copies raw to permanent/<chain-v>/ (disabled)                    │
 #   │  • Deletes incoming cycle dir after success                         │
 #   │  • Optional uploads to general / immutable cloud buckets            │
 #   └─────────────────────────────────────────────────────────────────────┘
@@ -20,7 +20,7 @@
 #   │  • Falls back to polling if inotifywait is unavailable              │
 #   │  • On new *.json: pauses backup → decrypts → rsync to VM1 → resumes │
 #   │  • Request schema: { version, chain, source, send_to_vm1,           │
-#   │                      vm1_dest_root }                                 │
+#   │                      vm1_dest_root }                                │
 #   └─────────────────────────────────────────────────────────────────────┘
 #
 # Required:
@@ -42,22 +42,22 @@ set -euo pipefail
 cd /   # never run with a CWD that might be deleted
 
 # ── logging ──────────────────────────────────────────────────────────────────
-LOG_FILE="${VM2_LOG_FILE:-/home/recovery/local-backup/state/vm2_service.log}"
+# LOG_FILE is resolved after .vm2.env is loaded below.
 
 log_info() {
-  local ts="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  local ts="$(date +"%Y-%m-%dT%H:%M:%S%z")"
   echo "[$ts] <INFO> $*" | tee -a "$LOG_FILE"
 }
 log_good() {
-  local ts="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  local ts="$(date +"%Y-%m-%dT%H:%M:%S%z")"
   echo "[$ts] <GOOD> $*" | tee -a "$LOG_FILE"
 }
 log_warn() {
-  local ts="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  local ts="$(date +"%Y-%m-%dT%H:%M:%S%z")"
   echo "[$ts] <WARN> $*" | tee -a "$LOG_FILE" >&2
 }
 log_error() {
-  local ts="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  local ts="$(date +"%Y-%m-%dT%H:%M:%S%z")"
   echo "[$ts] <ERROR> $*" | tee -a "$LOG_FILE" >&2
 }
 
@@ -69,46 +69,50 @@ require_env() {
   fi
 }
 
-# ── configuration (all overridable via environment) ───────────────────────────
-export GOOGLE_APPLICATION_CREDENTIALS="/home/recovery/utilities/serviceaccount.json"
-VM2_POLL_SECONDS="${VM2_POLL_SECONDS:-15}"
+# ── configuration ─────────────────────────────────────────────────────────────
+# All defaults live in .vm2.env, loaded by start_service.sh via:
+#   set -a; source utilities/.vm2.env; set +a
+# Values set in the environment always take precedence.
 
+# Load .vm2.env if it exists and vars aren't already exported (dev/direct-run fallback).
+_ENV_FILE="$(dirname "${BASH_SOURCE[0]}")/.vm2.env"
+if [[ -f "$_ENV_FILE" && -z "${VM2_AES_KEY_B64:-}" ]]; then
+  set -a
+  # shellcheck source=.vm2.env
+  source "$_ENV_FILE"
+  set +a
+fi
+unset _ENV_FILE
+
+# Validate that every required variable is present.
+require_env VM2_AES_KEY_B64
+require_env GOOGLE_APPLICATION_CREDENTIALS
+export GOOGLE_APPLICATION_CREDENTIALS
+
+# Resolve log file path now that .vm2.env has been loaded.
+LOG_FILE="${VM2_LOG_FILE:-/home/recovery/local-backup/state/vm2_service.log}"
+
+# Resolve optional vars with safe defaults (only used if not set in .vm2.env).
+VM2_POLL_SECONDS="${VM2_POLL_SECONDS:-15}"
 VM2_INCOMING_DIR="${VM2_INCOMING_DIR:-/home/recovery/local-backup/incoming}"
 VM2_ENCRYPTED_ROOT="${VM2_ENCRYPTED_ROOT:-/home/recovery/local-backup/encrypted}"
 VM2_WORK_DIR="${VM2_WORK_DIR:-}"
-
 VM2_DELETE_INCOMING_ON_SUCCESS="${VM2_DELETE_INCOMING_ON_SUCCESS:-1}"
-
-# Immutable uploads disabled by default (objects can't be deleted once written).
-VM2_ENABLE_IMMUTABLE_UPLOAD="${VM2_ENABLE_IMMUTABLE_UPLOAD:-0}"
-
 VM2_RESTORE_REQUEST_DIR="${VM2_RESTORE_REQUEST_DIR:-/home/recovery/local-backup/restore-requests}"
 VM2_OUTGOING_ROOT="${VM2_OUTGOING_ROOT:-/home/recovery/local-backup/outgoing/primary}"
 VM2_VM1_DEST_ROOT_DEFAULT="${VM2_VM1_DEST_ROOT_DEFAULT:-primary@192.168.10.128:/home/primary/data/backup-incoming}"
-
 STATE_DIR="${VM2_STATE_DIR:-/home/recovery/local-backup/state}"
 LOCK_FILE="$STATE_DIR/vm2_service.lock"
 
-# ── cloud placeholders ────────────────────────────────────────────────────────
-# General bucket upload (set once bucket is ready):
-#   VM2_UPLOAD_GENERAL_CMD="gsutil cp {src} gs://YOUR-BUCKET/{chain_v}/{cycle_id}/"
+# Cloud upload settings.
 VM2_ENABLE_GENERAL_UPLOAD="${VM2_ENABLE_GENERAL_UPLOAD:-1}"
-if [[ -z "${VM2_UPLOAD_GENERAL_CMD:-}" ]]; then
-  VM2_UPLOAD_GENERAL_CMD="rclone copy {src} mygcs:general_bucket_byan/{chain_v}/"
-fi
-
-# Immutable bucket upload (also set VM2_ENABLE_IMMUTABLE_UPLOAD=1):
-#   VM2_UPLOAD_IMMUTABLE_CMD="gsutil cp {src} gs://YOUR-IMMUTABLE-BUCKET/{chain_v}/{cycle_id}/"
+VM2_UPLOAD_GENERAL_CMD="${VM2_UPLOAD_GENERAL_CMD:-}"
 VM2_ENABLE_IMMUTABLE_UPLOAD="${VM2_ENABLE_IMMUTABLE_UPLOAD:-0}"
-if [[ -z "${VM2_UPLOAD_IMMUTABLE_CMD:-}" ]]; then
-  VM2_UPLOAD_IMMUTABLE_CMD="rclone copy {src} mygcs:immutable_bucket_byan/{chain_v}/"
-fi
+VM2_UPLOAD_IMMUTABLE_CMD="${VM2_UPLOAD_IMMUTABLE_CMD:-}"
 
-# rclone remotes for cloud restore (set once rclone is configured):
-#   VM2_RCLONE_GENERAL_REMOTE="mygcs:general-bucket"
-#   VM2_RCLONE_IMMUTABLE_REMOTE="mygcs:immutable-bucket"
-VM2_RCLONE_GENERAL_REMOTE="${VM2_RCLONE_GENERAL_REMOTE:-mygcs:general_bucket_byan}"
-VM2_RCLONE_IMMUTABLE_REMOTE="${VM2_RCLONE_IMMUTABLE_REMOTE:-mygcs:immutable_bucket_byan}"
+# rclone remotes for cloud restore.
+VM2_RCLONE_GENERAL_REMOTE="${VM2_RCLONE_GENERAL_REMOTE:-}"
+VM2_RCLONE_IMMUTABLE_REMOTE="${VM2_RCLONE_IMMUTABLE_REMOTE:-}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKUP_PY="$SCRIPT_DIR/vm2_cycle_processor.py"
@@ -174,8 +178,8 @@ if chain_n < 1:
     raise SystemExit("field 'chain' must be >= 1")
 
 source = obj.get('source', 'local')
-if source not in ('local', 'cloud', 'immutable'):
-    raise SystemExit("invalid source (must be local|cloud|immutable)")
+if source not in ('local', 'general', 'immutable'):
+    raise SystemExit("invalid source (must be local|general|immutable)")
 
 send = obj.get('send_to_vm1', True)
 if isinstance(send, bool):
@@ -294,15 +298,15 @@ execute_restore_request() {
   fi
 
   # Cloud source validation.
-  if [[ "$source" == "cloud" || "$source" == "immutable" ]]; then
+  if [[ "$source" == "general" || "$source" == "immutable" ]]; then
     if ! command -v rclone >/dev/null 2>&1; then
       log_error "rclone not found; required for source=$source"
       echo "rclone_not_found" > "$err_file"
       return 0
     fi
-    if [[ "$source" == "cloud" ]]; then
+    if [[ "$source" == "general" ]]; then
       if [[ -z "${VM2_RCLONE_GENERAL_REMOTE:-}" ]]; then
-        log_error "VM2_RCLONE_GENERAL_REMOTE not set (required for source=cloud)"
+        log_error "VM2_RCLONE_GENERAL_REMOTE not set (required for source=general)"
         echo "missing_rclone_general" > "$err_file"
         return 0
       fi
@@ -318,7 +322,7 @@ execute_restore_request() {
   fi
 
   # Execute.
-  if "$RECOVERY_PY" "${args[@]}"; then
+  if "$RECOVERY_PY" "${args[@]}" >> "$LOG_FILE" 2>&1; then
     log_good "━━ restore SUCCEEDED: $version / $chain cycle(s) ━━"
     echo "ok" > "$done_file"
     rm -f "$err_file" "$inprog" 2>/dev/null || true

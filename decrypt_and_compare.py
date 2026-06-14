@@ -142,11 +142,12 @@ ok("All incoming cycle directories deleted after encryption ✓")
 
 # Confirm encrypted artifacts exist.
 enc_chain = ENCRYPTED / CHAIN_V
-enc_b64s  = sorted(enc_chain.glob("*.tar.aes256gcm.b64"))
+enc_files = sorted(enc_chain.glob("*.tar.aes256gcm"))
+enc_files = [f for f in enc_files if not f.name.endswith(".meta.json")]
 enc_metas = sorted(enc_chain.glob("*.tar.aes256gcm.meta.json"))
-if len(enc_b64s) != len(cycle_dirs):
-    err(f"Expected {len(cycle_dirs)} encrypted artifacts, found {len(enc_b64s)}")
-ok(f"Encrypted artifacts: {len(enc_b64s)} .b64 + {len(enc_metas)} .meta.json")
+if len(enc_files) != len(cycle_dirs):
+    err(f"Expected {len(cycle_dirs)} encrypted artifacts, found {len(enc_files)}")
+ok(f"Encrypted artifacts: {len(enc_files)} .tar.aes256gcm + {len(enc_metas)} .meta.json")
 
 # Confirm encrypted markers.
 for cd in cycle_dirs:
@@ -164,11 +165,9 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes  # 
 NONCE_LEN = 12
 TAG_LEN   = 16
 
-def decrypt_b64_aes256gcm(key: bytes, b64_path: Path, out_path: Path) -> None:
-    """Streaming Base64-decode + AES-256-GCM decrypt → out_path."""
-    import binascii
-
-    raw = base64.b64decode(b64_path.read_bytes())
+def decrypt_aes256gcm(key: bytes, enc_path: Path, out_path: Path) -> None:
+    """Streaming AES-256-GCM decrypt (raw binary: nonce || ciphertext || tag) → out_path."""
+    raw        = enc_path.read_bytes()
     nonce      = raw[:NONCE_LEN]
     ciphertext = raw[NONCE_LEN:-TAG_LEN]
     tag        = raw[-TAG_LEN:]
@@ -185,11 +184,8 @@ total_cycles_ok     = 0
 with tempfile.TemporaryDirectory(prefix="vm2-decrypt-test-") as tmp:
     tmp_path = Path(tmp)
 
-    for b64_path in enc_b64s:
-        # Derive cycle_id from filename: <cycle_id>.tar.aes256gcm.b64
-        cycle_id = b64_path.name.split(".")[0] + "_" + b64_path.name.split(".")[1] if False else None
-        # Cleaner: strip known suffix
-        cycle_id = b64_path.name.removesuffix(".tar.aes256gcm.b64")
+    for enc_path in enc_files:
+        cycle_id = enc_path.name.removesuffix(".tar.aes256gcm")
 
         meta_path = enc_chain / f"{cycle_id}.tar.aes256gcm.meta.json"
         meta      = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -198,13 +194,13 @@ with tempfile.TemporaryDirectory(prefix="vm2-decrypt-test-") as tmp:
         assert meta["cycle_id"] == cycle_id,      f"cycle_id mismatch in meta: {meta}"
 
         print(f"\n  ── {CHAIN_V}/{cycle_id}")
-        print(f"     b64 size : {b64_path.stat().st_size:,} bytes")
-        print(f"     nonce    : {meta['nonce_b64']}")
-        print(f"     tag      : {meta['tag_b64']}")
+        print(f"     enc size : {enc_path.stat().st_size:,} bytes")
+        print(f"     nonce    : {meta['nonce_hex']}")
+        print(f"     tag      : {meta['tag_hex']}")
 
         # 3a. Decrypt → tar
         tar_path = tmp_path / f"{cycle_id}.tar"
-        decrypt_b64_aes256gcm(key_bytes, b64_path, tar_path)
+        decrypt_aes256gcm(key_bytes, enc_path, tar_path)
         ok(f"Decrypted → {tar_path.name}  ({tar_path.stat().st_size:,} bytes)")
 
         # 3b. Verify sha256 of plaintext tar matches metadata
@@ -297,6 +293,6 @@ print(f"  Cycles processed  : {len(cycle_dirs)}")
 print(f"  Cycles verified   : {total_cycles_ok}")
 print(f"  Files hash-checked: {total_files_checked}")
 print(f"  Incoming cleaned  : YES (deleted after encryption)")
-print(f"  Decryption        : AES-256-GCM + Base64")
+print(f"  Decryption        : AES-256-GCM (raw binary)")
 print(f"  Result            : ALL PASS ✓")
 print()
